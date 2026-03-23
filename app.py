@@ -5,11 +5,21 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
+VERSION: v15 — All fixes applied:
+  FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
+  FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
+  FIX C: Duplicate appointment detection before create_booking
+  FIX D: check_availability returns empty-slots message with suggestion when no slots found
+  FIX E: get_appointment_by_contact handles multiple upcoming appointments
+  FIX F: Email basic validation before creating contact
+  FIX G: update-date endpoint retries on failure and updates health version string
+  FIX H: Caller phone is injected into every tool call via the webhook handler
+
 Handles tool calls from Vapi during live phone conversations:
-- check_availability: Check calendar availability (next 14 days, skipping traceId keys)
+- check_availability: Check calendar availability (next 14 days)
 - get_contact: Search contact by phone number (V2 query search)
-- create_contact: Create a new contact (V2)
-- create_booking: Create a new appointment (V2)
+- create_contact: Create a new contact (V2, with duplicate check + phone/email validation)
+- create_booking: Create a new appointment (V2, with duplicate check)
 - reschedule_appointment: Reschedule an existing appointment (V2)
 - cancel_appointment: Cancel an existing appointment (V2)
 - get_appointment_by_contact: Find upcoming appointments for a contact (V2)
@@ -23,6 +33,7 @@ from flask import Flask, request, jsonify
 import requests as http_requests
 import json
 import os
+import re
 from datetime import datetime, timedelta
 import pytz
 
@@ -41,6 +52,8 @@ TZ = pytz.timezone("America/New_York")
 DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+SERVER_VERSION = "v15"
 
 
 def v2_headers():
@@ -81,14 +94,76 @@ def ghl_v2_put(path, data):
     return resp.json()
 
 
+def normalize_phone(phone):
+    """
+    Normalize a phone number to E.164 format (+1XXXXXXXXXX).
+    Returns (normalized_phone, is_valid) tuple.
+    
+    FIX B: Validates that the number has at least 7 digits after cleaning.
+    A number like '123456789' (9 digits, no country code) is treated as invalid
+    because it's likely a test/fake number given by the caller.
+    """
+    if not phone:
+        return "", False
+    
+    # Remove all non-digit characters except leading +
+    cleaned = re.sub(r"[^\d+]", "", phone)
+    digits_only = re.sub(r"\D", "", cleaned)
+    
+    # Reject obviously fake/short numbers (less than 10 digits)
+    # A real US number needs 10 digits (area code + number)
+    if len(digits_only) < 10:
+        return phone, False
+    
+    # Reject numbers that are clearly sequential/fake
+    if digits_only in ("1234567890", "0000000000", "1111111111", "9999999999",
+                       "11234567890", "10000000000", "11111111111"):
+        return phone, False
+    
+    # Reject 9-digit numbers (not a valid US number format)
+    if len(digits_only) == 9:
+        return phone, False
+    
+    # Normalize to E.164
+    if cleaned.startswith("+"):
+        return cleaned, True
+    
+    if len(digits_only) == 10:
+        return f"+1{digits_only}", True
+    elif len(digits_only) == 11 and digits_only.startswith("1"):
+        return f"+{digits_only}", True
+    else:
+        return f"+{digits_only}", True
+
+
+def validate_email(email):
+    """Basic email validation. Returns True if email looks valid."""
+    if not email:
+        return True  # Email is optional
+    pattern = r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email.strip()))
+
+
+def _format_local_time(iso_str):
+    """Convert an ISO datetime string to a human-readable Miami time string."""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        dt_local = dt.astimezone(TZ)
+        time_str = dt_local.strftime("%I:%M %p").lstrip("0").lower()
+        return f"{DAYS_ES[dt_local.weekday()]} {dt_local.day} de {MONTHS_ES[dt_local.month-1]} a las {time_str}"
+    except Exception:
+        return iso_str
+
+
 # ─── Tool Handlers ────────────────────────────────────────────────────────────
 
 def handle_check_availability(args):
     """Check available appointment slots for the next 14 days using V2 API.
     
-    BUG FIXED: GHL returns a 'traceId' key alongside date keys — we skip it.
-    BUG FIXED: Slots are labeled with human-readable date+day so Elena can
-               correctly match what the client says ('mañana', 'el martes', etc.)
+    Returns a single flat list of slots with exact 'time' field and human 'label'.
+    Tuesdays are prioritized (shown first).
+    
+    FIX D: Returns helpful message when no slots found, suggesting to try different dates.
     """
     now = datetime.now(TZ)
     start_ms = int(now.timestamp() * 1000)
@@ -134,12 +209,13 @@ def handle_check_availability(args):
                     is_tuesday = dt_local.weekday() == 1
 
                     slots.append({
-                        "time": slot,  # EXACT ISO timestamp — use this verbatim for create_booking/reschedule
+                        "time": slot,  # EXACT ISO timestamp — use verbatim for create_booking/reschedule
                         "label": f"{label} a las {time_str}",
-                        "is_tuesday": is_tuesday
+                        "is_tuesday": is_tuesday,
+                        "date": date_key
                     })
                 except Exception:
-                    slots.append({"time": slot, "label": slot, "is_tuesday": False})
+                    slots.append({"time": slot, "label": slot, "is_tuesday": False, "date": date_key})
 
     if slots:
         # Sort: Tuesdays first, then by date
@@ -150,42 +226,64 @@ def handle_check_availability(args):
             "available": True,
             "slots": ordered,
             "total_available": len(slots),
-            "BOOKING_RULE": "Para crear o reagendar una cita, usa el campo 'time' del slot EXACTAMENTE como aparece aqui — incluyendo la fecha completa. NUNCA cambies la fecha. NUNCA construyas el startTime manualmente.",
-            "message": "Horarios disponibles. Prioriza martes (is_tuesday=true). Usa el 'label' para hablar con el cliente y el 'time' exacto para create_booking/reschedule_appointment."
+            "BOOKING_RULE": (
+                "REGLA CRÍTICA: Para create_booking o reschedule_appointment, "
+                "copia el campo 'time' del slot EXACTAMENTE como aparece — "
+                "incluyendo fecha y hora completas. NUNCA cambies la fecha. "
+                "NUNCA construyas el startTime manualmente."
+            ),
+            "message": (
+                "Horarios disponibles. Prioriza martes (is_tuesday=true). "
+                "Usa el 'label' para hablar con el cliente y el 'time' exacto para las herramientas."
+            )
         }
     else:
+        # FIX D: Helpful message when no slots available
         return {
             "available": False,
             "slots": [],
             "total_available": 0,
-            "message": "No hay horarios disponibles en los proximos 14 dias.",
-            "raw_response": str(result)[:200]
+            "message": (
+                "No hay horarios disponibles en los próximos 14 días. "
+                "Informa al cliente que el calendario está lleno por el momento y "
+                "ofrécele que te deje sus datos para contactarle cuando haya disponibilidad, "
+                "o sugiérele llamar directamente al 786-743-0129."
+            )
         }
 
 
 def handle_get_contact(args):
     """Search for a contact by phone number using V2 API (query search).
     
-    BUG FIXED: V1 API key was expired/invalid. Now uses V2 with PIT and 'query' param.
+    FIX A: Also accepts 'callerPhone' (the real caller number from Vapi) as fallback.
+    If 'phone' argument is fake/invalid, uses 'callerPhone' instead.
+    FIX B: Validates phone number before searching.
     """
     phone = args.get("phone", "")
-    if not phone:
+    caller_phone = args.get("callerPhone", "")  # FIX A: real caller phone injected by server
+
+    # Normalize the provided phone
+    phone_normalized, phone_valid = normalize_phone(phone)
+    
+    # FIX A+B: If provided phone is invalid/fake, use the real caller phone
+    if not phone_valid and caller_phone:
+        phone_normalized, phone_valid = normalize_phone(caller_phone)
+        if phone_valid:
+            phone = caller_phone  # Use real caller phone
+    
+    if not phone_normalized:
         return {"found": False, "message": "Número de teléfono no proporcionado."}
 
-    # Normalize phone number
-    phone_clean = phone.replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
-    if not phone_clean.startswith("+"):
-        phone_clean = phone_clean.lstrip("0")
-        if len(phone_clean) == 10:
-            phone_clean = "+1" + phone_clean
-        elif len(phone_clean) == 11 and phone_clean.startswith("1"):
-            phone_clean = "+" + phone_clean
-        else:
-            phone_clean = "+" + phone_clean
+    if not phone_valid:
+        return {
+            "found": False, 
+            "phone_invalid": True,
+            "message": f"El número '{phone}' parece inválido. Por favor pídele al cliente su número de teléfono completo con código de área."
+        }
 
     result = ghl_v2_get(
         "/contacts/",
-        params={"locationId": LOCATION_ID, "query": phone_clean},
+        params={"locationId": LOCATION_ID, "query": phone_normalized},
         contacts_version=True
     )
 
@@ -207,28 +305,55 @@ def handle_get_contact(args):
 def handle_create_contact(args):
     """Create a new contact in GHL using V2 API.
     
-    BUG FIXED: V1 API key was expired/invalid. Now uses V2 with PIT.
+    FIX B: Validates phone number — rejects fake/short numbers.
+    FIX F: Validates email format before saving.
     Checks for existing contact first to avoid duplicates.
     """
-    # Check if contact already exists to avoid duplicates
     phone = args.get("phone", "")
-    if phone:
-        existing = handle_get_contact({"phone": phone})
-        if existing.get("found"):
-            return {
-                "success": True,
-                "contactId": existing["contactId"],
-                "message": f"Contacto ya existe: {existing.get('firstName','')} {existing.get('lastName','')}. Usando contacto existente."
-            }
+    caller_phone = args.get("callerPhone", "")  # FIX A: real caller phone
+    email = args.get("email", "")
+    
+    # FIX F: Validate email
+    if email and not validate_email(email):
+        return {
+            "success": False,
+            "message": f"El email '{email}' no parece válido. Por favor pídele al cliente que lo deletree de nuevo."
+        }
+    
+    # FIX B: Validate phone
+    phone_normalized, phone_valid = normalize_phone(phone)
+    
+    # FIX A: If provided phone is invalid, use real caller phone
+    if not phone_valid and caller_phone:
+        phone_normalized, phone_valid = normalize_phone(caller_phone)
+        if phone_valid:
+            phone = caller_phone
+    
+    if not phone_valid:
+        return {
+            "success": False,
+            "phone_invalid": True,
+            "message": f"El número '{phone}' parece inválido o de prueba. Pídele al cliente su número real con código de área (10 dígitos)."
+        }
+    
+    # Check if contact already exists to avoid duplicates
+    existing = handle_get_contact({"phone": phone_normalized, "callerPhone": caller_phone})
+    if existing.get("found"):
+        return {
+            "success": True,
+            "contactId": existing["contactId"],
+            "message": f"Contacto ya existe: {existing.get('firstName','')} {existing.get('lastName','')}. Usando contacto existente."
+        }
+    
     data = {
         "locationId": LOCATION_ID,
         "firstName": args.get("firstName", ""),
         "lastName": args.get("lastName", ""),
-        "phone": args.get("phone", ""),
+        "phone": phone_normalized,
         "source": "AI Elena - Llamada"
     }
-    if args.get("email"):
-        data["email"] = args["email"]
+    if email:
+        data["email"] = email.strip()
 
     result = ghl_v2_post("/contacts/", data, contacts_version=True)
 
@@ -242,25 +367,43 @@ def handle_create_contact(args):
     return {"success": False, "message": f"No se pudo crear el contacto: {str(result)[:200]}"}
 
 
-def _format_local_time(iso_str):
-    """Convert an ISO datetime string to a human-readable Miami time string."""
-    try:
-        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        dt_local = dt.astimezone(TZ)
-        time_str = dt_local.strftime("%I:%M %p").lstrip("0").lower()
-        return f"{DAYS_ES[dt_local.weekday()]} {dt_local.day} de {MONTHS_ES[dt_local.month-1]} a las {time_str}"
-    except Exception:
-        return iso_str
-
-
 def handle_create_booking(args):
-    """Create a new appointment in GHL calendar using V2 API with PIT."""
+    """Create a new appointment in GHL calendar using V2 API with PIT.
+    
+    FIX C: Checks for duplicate appointments before creating.
+    """
     contact_id = args.get("contactId", "")
     start_time = args.get("startTime", "")
     title = args.get("title", "Evaluación Botox - Laser Place Miami")
 
     if not contact_id or not start_time:
         return {"success": False, "message": "Se necesita contactId y startTime para agendar."}
+
+    # FIX C: Check for duplicate appointments
+    existing_appt = handle_get_appointment_by_contact({"contactId": contact_id})
+    if existing_appt.get("found"):
+        existing_time = existing_appt.get("humanTime", "")
+        existing_id = existing_appt.get("appointmentId", "")
+        # Check if it's the same slot
+        if existing_appt.get("startTime", "") == start_time:
+            return {
+                "success": True,
+                "appointmentId": existing_id,
+                "duplicate": True,
+                "message": f"El cliente ya tiene una cita para {existing_time}. No se creó duplicado."
+            }
+        # Different slot — warn Elena
+        return {
+            "success": False,
+            "has_existing": True,
+            "existingAppointmentId": existing_id,
+            "existingTime": existing_time,
+            "message": (
+                f"El cliente ya tiene una cita para {existing_time} (ID: {existing_id}). "
+                "Si quiere cambiarla, usa reschedule_appointment. "
+                "Si quiere una cita adicional, cancela la anterior primero con cancel_appointment."
+            )
+        }
 
     try:
         dt_start = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
@@ -349,10 +492,14 @@ def handle_cancel_appointment(args):
 
 
 def handle_get_appointment_by_contact(args):
-    """Get upcoming appointments for a contact using V2 API with PIT."""
+    """Get upcoming appointments for a contact using V2 API with PIT.
+    
+    FIX E: Returns ALL upcoming appointments (not just the first), so Elena can
+    ask the client which one to cancel/reschedule if there are multiple.
+    """
     contact_id = args.get("contactId", "")
     if not contact_id:
-        return {"found": False, "message": "Se necesita el contactId para buscar citas."}
+        return {"found": False, "message": "Se necesita el contactId para buscar citas. Por favor usa get_contact primero para obtener el contactId."}
 
     result = ghl_v2_get(f"/contacts/{contact_id}/appointments")
 
@@ -383,26 +530,58 @@ def handle_get_appointment_by_contact(args):
 
     upcoming.sort(key=lambda x: x[0])
 
-    if upcoming:
-        dt_appt, appt = upcoming[0]
+    if not upcoming:
+        return {"found": False, "message": "No se encontraron citas próximas para este contacto en el calendario de Botox."}
+
+    # FIX E: Return all upcoming appointments
+    appt_list = []
+    for dt_appt, appt in upcoming:
         start_raw = appt.get("startTime", "")
         if " " in start_raw:
             start_raw = start_raw.replace(" ", "T") + "+00:00"
-        # Convert to Miami local time for Elena to communicate correctly
         dt_local = dt_appt.astimezone(TZ)
         time_str = dt_local.strftime("%I:%M %p").lstrip("0").lower()
         human_time = f"{DAYS_ES[dt_local.weekday()]} {dt_local.day} de {MONTHS_ES[dt_local.month-1]} a las {time_str}"
-        return {
-            "found": True,
+        appt_list.append({
             "appointmentId": appt.get("id", ""),
             "startTime": start_raw,
-            "startTimeLocal": dt_local.isoformat(),
             "humanTime": human_time,
             "title": appt.get("title", ""),
-            "status": appt.get("appointmentStatus", ""),
-            "message": f"Cita encontrada: {human_time} (hora de Miami). ID: {appt.get('id','')}"
+            "status": appt.get("appointmentStatus", "")
+        })
+
+    # Primary appointment (soonest)
+    primary = appt_list[0]
+    
+    if len(appt_list) == 1:
+        return {
+            "found": True,
+            "appointmentId": primary["appointmentId"],
+            "startTime": primary["startTime"],
+            "humanTime": primary["humanTime"],
+            "title": primary["title"],
+            "status": primary["status"],
+            "total_appointments": 1,
+            "message": f"Cita encontrada: {primary['humanTime']} (hora de Miami). ID: {primary['appointmentId']}"
         }
-    return {"found": False, "message": "No se encontraron citas próximas para este contacto en el calendario de Botox."}
+    else:
+        # Multiple appointments — list them all
+        descriptions = [f"{a['humanTime']} (ID: {a['appointmentId']})" for a in appt_list]
+        return {
+            "found": True,
+            "appointmentId": primary["appointmentId"],
+            "startTime": primary["startTime"],
+            "humanTime": primary["humanTime"],
+            "title": primary["title"],
+            "status": primary["status"],
+            "total_appointments": len(appt_list),
+            "all_appointments": appt_list,
+            "message": (
+                f"El cliente tiene {len(appt_list)} citas próximas: "
+                + "; ".join(descriptions)
+                + ". Pregunta al cliente cuál desea modificar/cancelar."
+            )
+        }
 
 
 # ─── Tool Registry ────────────────────────────────────────────────────────────
@@ -420,7 +599,13 @@ TOOL_HANDLERS = {
 # ─── Vapi Server URL Endpoint ─────────────────────────────────────────────────
 @app.route("/api/vapi/server-url", methods=["POST", "OPTIONS", "GET"])
 def vapi_server_url():
-    """Main entry point for Vapi tool calls."""
+    """Main entry point for Vapi tool calls.
+    
+    FIX H: Extracts caller phone from call.customer.number and injects it
+    into every tool call as 'callerPhone' argument. This ensures get_contact
+    and create_contact always have access to the real caller number even if
+    the client gives a fake/wrong number.
+    """
     if request.method == "OPTIONS":
         return "", 204, {
             "Access-Control-Allow-Origin": "*",
@@ -433,7 +618,7 @@ def vapi_server_url():
     if request.method == "GET":
         return jsonify({
             "status": "healthy",
-            "service": "Elena AI - Vapi Tool Server",
+            "service": f"Elena AI - Vapi Tool Server {SERVER_VERSION}",
             "tools": list(TOOL_HANDLERS.keys()),
             "calendar_id": CALENDAR_ID,
             "using_pit": bool(GHL_PIT)
@@ -443,6 +628,10 @@ def vapi_server_url():
         body = request.get_json(silent=True) or {}
         message = body.get("message", body)
         message_type = message.get("type", "")
+
+        # FIX H: Extract caller phone from call.customer.number
+        call_data = message.get("call", {})
+        caller_phone = call_data.get("customer", {}).get("number", "")
 
         if message_type == "tool-calls":
             tool_calls = message.get("toolCallList", [])
@@ -458,6 +647,10 @@ def vapi_server_url():
                         arguments = json.loads(arguments)
                     except json.JSONDecodeError:
                         arguments = {}
+
+                # FIX H: Inject caller phone into every tool call
+                if caller_phone and isinstance(arguments, dict):
+                    arguments["callerPhone"] = caller_phone
 
                 handler = TOOL_HANDLERS.get(fn_name)
                 if handler:
@@ -485,6 +678,10 @@ def vapi_server_url():
                 except json.JSONDecodeError:
                     arguments = {}
 
+            # FIX H: Inject caller phone
+            if caller_phone and isinstance(arguments, dict):
+                arguments["callerPhone"] = caller_phone
+
             handler = TOOL_HANDLERS.get(fn_name)
             if handler:
                 try:
@@ -511,8 +708,8 @@ def vapi_server_url():
 def update_date():
     """Update the Vapi assistant system prompt with today's date.
     
-    Call this endpoint once daily (e.g., via a cron job or Render cron) 
-    to keep Elena's date awareness current. Also called at server startup.
+    FIX G: Retries up to 3 times on failure.
+    Always includes current tools in PATCH to avoid deleting them.
     """
     now = datetime.now(TZ)
     tomorrow = now + timedelta(days=1)
@@ -544,45 +741,55 @@ def update_date():
     new_lines = lines[:insert_pos] + date_section.split("\n") + lines[insert_pos:]
     full_prompt = "\n".join(new_lines)
 
-    # Get current assistant config to preserve tools and other settings
-    current_resp = http_requests.get(
-        f"https://api.vapi.ai/assistant/{VAPI_ASSISTANT_ID}",
-        headers={"Authorization": f"Bearer {VAPI_KEY}"},
-        timeout=10
-    )
-    current_model = current_resp.json().get("model", {})
-    current_tools = current_model.get("tools", [])
-    current_tool_ids = current_model.get("toolIds", [])
+    # FIX G: Retry up to 3 times
+    last_error = None
+    for attempt in range(3):
+        try:
+            # Get current assistant config to preserve tools and other settings
+            current_resp = http_requests.get(
+                f"https://api.vapi.ai/assistant/{VAPI_ASSISTANT_ID}",
+                headers={"Authorization": f"Bearer {VAPI_KEY}"},
+                timeout=10
+            )
+            current_model = current_resp.json().get("model", {})
+            current_tools = current_model.get("tools", [])
+            current_tool_ids = current_model.get("toolIds", [])
 
-    # Update Vapi assistant system prompt — MUST include tools to avoid deleting them
-    patch_body = {
-        "model": {
-            "provider": "openai",
-            "model": "gpt-4o",
-            "messages": [{"role": "system", "content": full_prompt}]
-        }
-    }
-    if current_tools:
-        patch_body["model"]["tools"] = current_tools
-    if current_tool_ids:
-        patch_body["model"]["toolIds"] = current_tool_ids
+            # Update Vapi assistant system prompt — MUST include tools to avoid deleting them
+            patch_body = {
+                "model": {
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "messages": [{"role": "system", "content": full_prompt}]
+                }
+            }
+            if current_tools:
+                patch_body["model"]["tools"] = current_tools
+            if current_tool_ids:
+                patch_body["model"]["toolIds"] = current_tool_ids
 
-    resp = http_requests.patch(
-        f"https://api.vapi.ai/assistant/{VAPI_ASSISTANT_ID}",
-        headers={"Authorization": f"Bearer {VAPI_KEY}", "Content-Type": "application/json"},
-        json=patch_body,
-        timeout=20
-    )
+            resp = http_requests.patch(
+                f"https://api.vapi.ai/assistant/{VAPI_ASSISTANT_ID}",
+                headers={"Authorization": f"Bearer {VAPI_KEY}", "Content-Type": "application/json"},
+                json=patch_body,
+                timeout=20
+            )
 
-    if resp.status_code == 200:
-        return jsonify({
-            "success": True,
-            "today": today_str,
-            "tomorrow": tomorrow_str,
-            "prompt_length": len(full_prompt)
-        })
-    else:
-        return jsonify({"success": False, "error": resp.text[:300]}), 500
+            if resp.status_code == 200:
+                return jsonify({
+                    "success": True,
+                    "today": today_str,
+                    "tomorrow": tomorrow_str,
+                    "prompt_length": len(full_prompt),
+                    "tools_preserved": len(current_tools),
+                    "attempt": attempt + 1
+                })
+            else:
+                last_error = resp.text[:300]
+        except Exception as e:
+            last_error = str(e)
+
+    return jsonify({"success": False, "error": last_error, "attempts": 3}), 500
 
 
 # ─── Health Check ─────────────────────────────────────────────────────────────
@@ -591,7 +798,7 @@ def health():
     now = datetime.now(TZ)
     return jsonify({
         "status": "healthy",
-        "service": "Elena AI Tool Server v11",
+        "service": f"Elena AI Tool Server {SERVER_VERSION}",
         "using_pit": bool(GHL_PIT),
         "calendar_id": CALENDAR_ID,
         "current_time_miami": now.strftime("%Y-%m-%d %H:%M %Z"),
