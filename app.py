@@ -370,7 +370,8 @@ def handle_get_appointment_by_contact(args):
     for a in appointments:
         if a.get("calendarId") != CALENDAR_ID:
             continue
-        if a.get("appointmentStatus") == "cancelled":
+        # Skip cancelled and noshow appointments
+        if a.get("appointmentStatus") in ("cancelled", "noshow"):
             continue
         start_str = a.get("startTime", "")
         try:
@@ -549,15 +550,33 @@ def update_date():
     new_lines = lines[:insert_pos] + date_section.split("\n") + lines[insert_pos:]
     full_prompt = "\n".join(new_lines)
 
-    # Update Vapi assistant system prompt
-    resp = http_requests.patch(
+    # Get current assistant config to preserve tools and other settings
+    current_resp = http_requests.get(
         f"https://api.vapi.ai/assistant/{VAPI_ASSISTANT_ID}",
-        headers={"Authorization": f"Bearer {VAPI_KEY}", "Content-Type": "application/json"},
-        json={"model": {
+        headers={"Authorization": f"Bearer {VAPI_KEY}"},
+        timeout=10
+    )
+    current_model = current_resp.json().get("model", {})
+    current_tools = current_model.get("tools", [])
+    current_tool_ids = current_model.get("toolIds", [])
+
+    # Update Vapi assistant system prompt — MUST include tools to avoid deleting them
+    patch_body = {
+        "model": {
             "provider": "openai",
             "model": "gpt-4o",
             "messages": [{"role": "system", "content": full_prompt}]
-        }},
+        }
+    }
+    if current_tools:
+        patch_body["model"]["tools"] = current_tools
+    if current_tool_ids:
+        patch_body["model"]["toolIds"] = current_tool_ids
+
+    resp = http_requests.patch(
+        f"https://api.vapi.ai/assistant/{VAPI_ASSISTANT_ID}",
+        headers={"Authorization": f"Bearer {VAPI_KEY}", "Content-Type": "application/json"},
+        json=patch_body,
         timeout=20
     )
 
