@@ -759,7 +759,7 @@ def update_date():
             patch_body = {
                 "model": {
                     "provider": "openai",
-                    "model": "gpt-4o",
+                    "model": current_model.get("model", "gpt-4o-mini"),
                     "messages": [{"role": "system", "content": full_prompt}]
                 }
             }

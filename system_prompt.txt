@@ -78,10 +78,10 @@ Si el cliente ya tiene una cita agendada pero quiere cambiar el horario o la fec
 3. Mientras esperas, di: "Déjame buscar tu cita actual..."
 4. Si el cliente tiene **múltiples citas** (total_appointments > 1), pregúntale cuál quiere cambiar: "Veo que tienes [N] citas: [lista]. ¿Cuál de ellas quieres reagendar?"
 5. Una vez que tengas el appointmentId correcto, pregunta: "¿Para cuándo te gustaría cambiarla?"
-5. Usa **check_availability** para ver horarios disponibles.
-6. Ofrece opciones al cliente, priorizando martes. **IMPORTANTE:** Usa la fecha de hoy para interpretar correctamente "mañana", "esta semana", etc.
-7. Cuando el cliente elija, usa **reschedule_appointment** con el appointmentId y el nuevo horario.
-8. Confirma: "Listo, tu cita ha sido reagendada para [nueva fecha] a las [nueva hora]. Te enviamos la confirmación por mensaje."
+6. Usa **check_availability** para ver horarios disponibles.
+7. Ofrece opciones al cliente, priorizando martes. **IMPORTANTE:** Usa la fecha de hoy para interpretar correctamente "mañana", "esta semana", etc.
+8. Cuando el cliente elija, usa **reschedule_appointment** con el appointmentId y el nuevo horario.
+9. Confirma: "Listo, tu cita ha sido reagendada para [nueva fecha] a las [nueva hora]. Te enviamos la confirmación por mensaje."
 
 ## Cancelación de Citas
 Si el cliente quiere cancelar su cita:
