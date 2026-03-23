@@ -250,7 +250,7 @@ def handle_create_booking(args):
 
 
 def handle_reschedule_appointment(args):
-    """Reschedule an existing appointment to a new time using V1 API."""
+    """Reschedule an existing appointment to a new time using V2 API with PIT."""
     appointment_id = args.get("appointmentId", "")
     new_start_time = args.get("newStartTime", "")
 
@@ -259,61 +259,96 @@ def handle_reschedule_appointment(args):
     if not new_start_time:
         return {"success": False, "message": "Se necesita el nuevo horario (newStartTime) para reagendar."}
 
-    result = ghl_v1_put(f"appointments/{appointment_id}", {"startTime": new_start_time})
+    # Calculate end time (30 min after start)
+    try:
+        dt_start = datetime.fromisoformat(new_start_time.replace("Z", "+00:00"))
+        dt_end = dt_start + timedelta(minutes=30)
+        end_time = dt_end.isoformat()
+    except Exception:
+        end_time = new_start_time  # fallback
 
-    if "id" in result or "appointment" in result:
+    data = {
+        "startTime": new_start_time,
+        "endTime": end_time,
+        "calendarId": CALENDAR_ID,
+        "selectedTimezone": "America/New_York",
+        "selectedSlot": new_start_time
+    }
+
+    result = ghl_v2_put(f"/calendars/events/appointments/{appointment_id}", data)
+
+    if "id" in result:
         return {
             "success": True,
             "appointmentId": appointment_id,
             "newStartTime": new_start_time,
             "message": f"Cita reagendada exitosamente al nuevo horario: {new_start_time}"
         }
-    return {"success": False, "message": f"No se pudo reagendar: {str(result)[:200]}"}
+    return {"success": False, "message": f"No se pudo reagendar: {str(result)[:300]}"}
 
 
 def handle_cancel_appointment(args):
-    """Cancel an existing appointment using V1 API."""
+    """Cancel an existing appointment using V2 API with PIT."""
     appointment_id = args.get("appointmentId", "")
     if not appointment_id:
         return {"success": False, "message": "Se necesita el appointmentId para cancelar."}
 
-    result = ghl_v1_put(f"appointments/{appointment_id}", {"appointmentStatus": "cancelled"})
+    result = ghl_v2_put(f"/calendars/events/appointments/{appointment_id}", {"appointmentStatus": "cancelled"})
 
-    if "id" in result or "appointment" in result:
+    if "id" in result:
         return {"success": True, "appointmentId": appointment_id, "message": "Cita cancelada exitosamente."}
     return {"success": False, "message": f"No se pudo cancelar: {str(result)[:200]}"}
 
 
 def handle_get_appointment_by_contact(args):
-    """Get upcoming appointments for a contact using V1 API."""
+    """Get upcoming appointments for a contact using V2 API with PIT."""
     contact_id = args.get("contactId", "")
     if not contact_id:
         return {"found": False, "message": "Se necesita el contactId para buscar citas."}
 
-    now = datetime.utcnow()
-    start_ms = int(now.timestamp() * 1000)
-    end_ms = int((now + timedelta(days=60)).timestamp() * 1000)
+    result = ghl_v2_get(f"/contacts/{contact_id}/appointments")
 
-    result = ghl_v1_get("appointments/", {
-        "calendarId": CALENDAR_ID,
-        "startDate": start_ms,
-        "endDate": end_ms
-    })
+    # GHL V2 returns 'events' key (not 'appointments')
+    appointments = result.get("events", result.get("appointments", []))
+    # Filter to only this calendar and future appointments
+    now = datetime.now(TZ)
+    upcoming = []
+    for a in appointments:
+        if a.get("calendarId") != CALENDAR_ID:
+            continue
+        if a.get("appointmentStatus") == "cancelled":
+            continue
+        start_str = a.get("startTime", "")
+        try:
+            # GHL returns UTC strings like "2026-03-24 16:00:00"
+            if " " in start_str:
+                start_str_iso = start_str.replace(" ", "T") + "+00:00"
+            else:
+                start_str_iso = start_str
+            dt = datetime.fromisoformat(start_str_iso)
+            if dt.tzinfo is None:
+                dt = pytz.utc.localize(dt)
+            if dt > now:
+                upcoming.append((dt, a))
+        except Exception:
+            pass
 
-    appointments = result.get("appointments", [])
-    contact_appts = [a for a in appointments if a.get("contactId") == contact_id]
+    upcoming.sort(key=lambda x: x[0])
 
-    if contact_appts:
-        appt = contact_appts[0]
+    if upcoming:
+        _, appt = upcoming[0]
+        start_raw = appt.get("startTime", "")
+        if " " in start_raw:
+            start_raw = start_raw.replace(" ", "T") + "+00:00"
         return {
             "found": True,
             "appointmentId": appt.get("id", ""),
-            "startTime": appt.get("startTime", ""),
+            "startTime": start_raw,
             "title": appt.get("title", ""),
             "status": appt.get("appointmentStatus", ""),
             "message": f"Cita encontrada: {appt.get('title', '')} - {appt.get('startTime', '')}"
         }
-    return {"found": False, "message": "No se encontraron citas próximas para este contacto."}
+    return {"found": False, "message": "No se encontraron citas próximas para este contacto en el calendario de Botox."}
 
 
 # ─── Tool Registry ────────────────────────────────────────────────────────────
