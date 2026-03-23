@@ -214,7 +214,18 @@ def handle_create_contact(args):
     """Create a new contact in GHL using V2 API.
     
     BUG FIXED: V1 API key was expired/invalid. Now uses V2 with PIT.
+    Checks for existing contact first to avoid duplicates.
     """
+    # Check if contact already exists to avoid duplicates
+    phone = args.get("phone", "")
+    if phone:
+        existing = handle_get_contact({"phone": phone})
+        if existing.get("found"):
+            return {
+                "success": True,
+                "contactId": existing["contactId"],
+                "message": f"Contacto ya existe: {existing.get('firstName','')} {existing.get('lastName','')}. Usando contacto existente."
+            }
     data = {
         "locationId": LOCATION_ID,
         "firstName": args.get("firstName", ""),
@@ -235,6 +246,17 @@ def handle_create_contact(args):
             "message": f"Contacto creado: {contact.get('firstName', '')} {contact.get('lastName', '')}"
         }
     return {"success": False, "message": f"No se pudo crear el contacto: {str(result)[:200]}"}
+
+
+def _format_local_time(iso_str):
+    """Convert an ISO datetime string to a human-readable Miami time string."""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        dt_local = dt.astimezone(TZ)
+        time_str = dt_local.strftime("%I:%M %p").lstrip("0").lower()
+        return f"{DAYS_ES[dt_local.weekday()]} {dt_local.day} de {MONTHS_ES[dt_local.month-1]} a las {time_str}"
+    except Exception:
+        return iso_str
 
 
 def handle_create_booking(args):
@@ -269,10 +291,11 @@ def handle_create_booking(args):
 
     if "id" in result or "appointment" in result:
         appt = result if "id" in result else result.get("appointment", {})
+        human_time = _format_local_time(start_time)
         return {
             "success": True,
             "appointmentId": appt.get("id", ""),
-            "message": f"Cita agendada exitosamente para {start_time}. ID: {appt.get('id', '')}"
+            "message": f"Cita agendada exitosamente para el {human_time} (hora de Miami). ID: {appt.get('id', '')}"
         }
     return {"success": False, "message": f"No se pudo agendar: {str(result)[:300]}"}
 
@@ -305,11 +328,12 @@ def handle_reschedule_appointment(args):
     result = ghl_v2_put(f"/calendars/events/appointments/{appointment_id}", data)
 
     if "id" in result:
+        human_time = _format_local_time(new_start_time)
         return {
             "success": True,
             "appointmentId": appointment_id,
             "newStartTime": new_start_time,
-            "message": f"Cita reagendada exitosamente al nuevo horario: {new_start_time}"
+            "message": f"Cita reagendada exitosamente para el {human_time} (hora de Miami)."
         }
     return {"success": False, "message": f"No se pudo reagendar: {str(result)[:300]}"}
 
@@ -365,17 +389,23 @@ def handle_get_appointment_by_contact(args):
     upcoming.sort(key=lambda x: x[0])
 
     if upcoming:
-        _, appt = upcoming[0]
+        dt_appt, appt = upcoming[0]
         start_raw = appt.get("startTime", "")
         if " " in start_raw:
             start_raw = start_raw.replace(" ", "T") + "+00:00"
+        # Convert to Miami local time for Elena to communicate correctly
+        dt_local = dt_appt.astimezone(TZ)
+        time_str = dt_local.strftime("%I:%M %p").lstrip("0").lower()
+        human_time = f"{DAYS_ES[dt_local.weekday()]} {dt_local.day} de {MONTHS_ES[dt_local.month-1]} a las {time_str}"
         return {
             "found": True,
             "appointmentId": appt.get("id", ""),
             "startTime": start_raw,
+            "startTimeLocal": dt_local.isoformat(),
+            "humanTime": human_time,
             "title": appt.get("title", ""),
             "status": appt.get("appointmentStatus", ""),
-            "message": f"Cita encontrada: {appt.get('title', '')} - {appt.get('startTime', '')}"
+            "message": f"Cita encontrada: {human_time} (hora de Miami). ID: {appt.get('id','')}"
         }
     return {"found": False, "message": "No se encontraron citas próximas para este contacto en el calendario de Botox."}
 
