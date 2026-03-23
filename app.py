@@ -103,9 +103,7 @@ def handle_check_availability(args):
         }
     )
 
-    formatted_slots = []
-    tuesday_slots = []
-    other_slots = []
+    slots = []
 
     if isinstance(result, dict):
         for date_key, day_data in sorted(result.items()):
@@ -133,38 +131,34 @@ def handle_check_availability(args):
                     else:
                         label = f"{DAYS_ES[dt_local.weekday()]} {dt_local.day} de {MONTHS_ES[dt_local.month-1]}"
                     time_str = dt_local.strftime("%I:%M %p").lstrip("0").lower()
+                    is_tuesday = dt_local.weekday() == 1
 
-                    slot_entry = {
-                        "date": date_key,
-                        "time": slot,
+                    slots.append({
+                        "time": slot,  # EXACT ISO timestamp — use this verbatim for create_booking/reschedule
                         "label": f"{label} a las {time_str}",
-                        "day_of_week": DAYS_ES[dt_local.weekday()]
-                    }
-                    formatted_slots.append(slot_entry)
-                    if dt_local.weekday() == 1:  # Tuesday
-                        tuesday_slots.append(slot_entry)
-                    else:
-                        other_slots.append(slot_entry)
+                        "is_tuesday": is_tuesday
+                    })
                 except Exception:
-                    slot_entry = {"date": date_key, "time": slot, "label": slot, "day_of_week": "?"}
-                    formatted_slots.append(slot_entry)
-                    other_slots.append(slot_entry)
+                    slots.append({"time": slot, "label": slot, "is_tuesday": False})
 
-    if formatted_slots:
+    if slots:
+        # Sort: Tuesdays first, then by date
+        tuesday_slots = [s for s in slots if s["is_tuesday"]]
+        other_slots = [s for s in slots if not s["is_tuesday"]]
+        ordered = tuesday_slots[:5] + other_slots[:10]
         return {
             "available": True,
-            "tuesday_slots": tuesday_slots[:5],
-            "other_slots": other_slots[:10],
-            "total_available": len(formatted_slots),
-            "message": "Horarios disponibles encontrados. Prioriza ofrecer los martes. Usa el campo 'label' para decirle al cliente el día y hora exactos."
+            "slots": ordered,
+            "total_available": len(slots),
+            "BOOKING_RULE": "Para crear o reagendar una cita, usa el campo 'time' del slot EXACTAMENTE como aparece aqui — incluyendo la fecha completa. NUNCA cambies la fecha. NUNCA construyas el startTime manualmente.",
+            "message": "Horarios disponibles. Prioriza martes (is_tuesday=true). Usa el 'label' para hablar con el cliente y el 'time' exacto para create_booking/reschedule_appointment."
         }
     else:
         return {
             "available": False,
-            "tuesday_slots": [],
-            "other_slots": [],
+            "slots": [],
             "total_available": 0,
-            "message": "No hay horarios disponibles en los próximos 14 días.",
+            "message": "No hay horarios disponibles en los proximos 14 dias.",
             "raw_response": str(result)[:200]
         }
 
