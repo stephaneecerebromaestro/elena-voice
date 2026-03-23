@@ -3,15 +3,20 @@ Elena AI - Vapi Tool Server for GoHighLevel
 Standalone Flask server for deployment on Render.
 
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
+ALL endpoints use V2 API — V1 is NOT used anywhere.
 
 Handles tool calls from Vapi during live phone conversations:
-- check_availability: Check calendar availability (next 14 days)
-- get_contact: Search contact by phone number
-- create_contact: Create a new contact
-- create_booking: Create a new appointment
-- reschedule_appointment: Reschedule an existing appointment
-- cancel_appointment: Cancel an existing appointment
-- get_appointment_by_contact: Find upcoming appointments for a contact
+- check_availability: Check calendar availability (next 14 days, skipping traceId keys)
+- get_contact: Search contact by phone number (V2 query search)
+- create_contact: Create a new contact (V2)
+- create_booking: Create a new appointment (V2)
+- reschedule_appointment: Reschedule an existing appointment (V2)
+- cancel_appointment: Cancel an existing appointment (V2)
+- get_appointment_by_contact: Find upcoming appointments for a contact (V2)
+
+Also exposes:
+- /update-date: Updates Vapi assistant system prompt with today's date (call daily)
+- /health: Health check endpoint
 """
 
 from flask import Flask, request, jsonify
@@ -24,43 +29,49 @@ import pytz
 app = Flask(__name__)
 
 # ─── Configuration ────────────────────────────────────────────────────────────
-GHL_PIT = os.environ.get("GHL_PIT", "")           # Private Integration Token
-GHL_API_KEY = os.environ.get("GHL_API_KEY", "")   # Legacy JWT key (fallback)
+GHL_PIT = os.environ.get("GHL_PIT", "")
 CALENDAR_ID = os.environ.get("GHL_CALENDAR_ID", "hYHvVwjKPykvcPkrsQWT")
 LOCATION_ID = os.environ.get("GHL_LOCATION_ID", "hzRj7DV9erP8tnPiTv7D")
+VAPI_KEY = os.environ.get("VAPI_API_KEY", "88453266-9413-4275-babf-8e2481a9a1d6")
+VAPI_ASSISTANT_ID = os.environ.get("VAPI_ASSISTANT_ID", "1631c7cf-2914-45f9-bf82-6635cdf00aba")
 
 GHL_V2_BASE = "https://services.leadconnectorhq.com"
-GHL_V1_BASE = "https://rest.gohighlevel.com/v1"
 TZ = pytz.timezone("America/New_York")
+
+DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
+             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
 
 def v2_headers():
     """Headers for GHL V2 API using PIT."""
-    token = GHL_PIT or GHL_API_KEY
     return {
-        "Authorization": f"Bearer {token}",
+        "Authorization": f"Bearer {GHL_PIT}",
         "Content-Type": "application/json",
         "Version": "2021-04-15"
     }
 
 
-def v1_headers():
-    """Headers for GHL V1 API using legacy JWT."""
+def v2_headers_contacts():
+    """Headers for GHL V2 Contacts API (uses different version)."""
     return {
-        "Authorization": f"Bearer {GHL_API_KEY}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {GHL_PIT}",
+        "Content-Type": "application/json",
+        "Version": "2021-07-28"
     }
 
 
-def ghl_v2_get(path, params=None):
+def ghl_v2_get(path, params=None, contacts_version=False):
     url = f"{GHL_V2_BASE}{path}"
-    resp = http_requests.get(url, headers=v2_headers(), params=params, timeout=12)
+    headers = v2_headers_contacts() if contacts_version else v2_headers()
+    resp = http_requests.get(url, headers=headers, params=params, timeout=12)
     return resp.json()
 
 
-def ghl_v2_post(path, data):
+def ghl_v2_post(path, data, contacts_version=False):
     url = f"{GHL_V2_BASE}{path}"
-    resp = http_requests.post(url, headers=v2_headers(), json=data, timeout=12)
+    headers = v2_headers_contacts() if contacts_version else v2_headers()
+    resp = http_requests.post(url, headers=headers, json=data, timeout=12)
     return resp.json()
 
 
@@ -70,28 +81,15 @@ def ghl_v2_put(path, data):
     return resp.json()
 
 
-def ghl_v1_get(endpoint, params=None):
-    url = f"{GHL_V1_BASE}/{endpoint}"
-    resp = http_requests.get(url, headers=v1_headers(), params=params, timeout=12)
-    return resp.json()
-
-
-def ghl_v1_post(endpoint, data):
-    url = f"{GHL_V1_BASE}/{endpoint}"
-    resp = http_requests.post(url, headers=v1_headers(), json=data, timeout=12)
-    return resp.json()
-
-
-def ghl_v1_put(endpoint, data):
-    url = f"{GHL_V1_BASE}/{endpoint}"
-    resp = http_requests.put(url, headers=v1_headers(), json=data, timeout=12)
-    return resp.json()
-
-
 # ─── Tool Handlers ────────────────────────────────────────────────────────────
 
 def handle_check_availability(args):
-    """Check available appointment slots for the next 14 days using V2 API."""
+    """Check available appointment slots for the next 14 days using V2 API.
+    
+    BUG FIXED: GHL returns a 'traceId' key alongside date keys — we skip it.
+    BUG FIXED: Slots are labeled with human-readable date+day so Elena can
+               correctly match what the client says ('mañana', 'el martes', etc.)
+    """
     now = datetime.now(TZ)
     start_ms = int(now.timestamp() * 1000)
     end_ms = int((now + timedelta(days=14)).timestamp() * 1000)
@@ -105,13 +103,16 @@ def handle_check_availability(args):
         }
     )
 
-    # Parse the response - V2 returns {date: {slots: [...]}}
     formatted_slots = []
     tuesday_slots = []
     other_slots = []
 
     if isinstance(result, dict):
         for date_key, day_data in sorted(result.items()):
+            # Skip non-date keys like 'traceId'
+            if not date_key.startswith("20"):
+                continue
+
             if isinstance(day_data, dict) and "slots" in day_data:
                 slots_list = day_data["slots"]
             elif isinstance(day_data, list):
@@ -120,17 +121,33 @@ def handle_check_availability(args):
                 continue
 
             for slot in slots_list[:5]:  # max 5 per day
-                slot_entry = {"date": date_key, "time": slot}
-                formatted_slots.append(slot_entry)
-
-                # Check if it's Tuesday
                 try:
                     dt = datetime.fromisoformat(slot.replace("Z", "+00:00"))
-                    if dt.weekday() == 1:  # Tuesday = 1
+                    dt_local = dt.astimezone(TZ)
+                    days_from_now = (dt_local.date() - now.date()).days
+                    # Build human label: "mañana (martes 24 de marzo)"
+                    if days_from_now == 0:
+                        label = f"hoy ({DAYS_ES[dt_local.weekday()]} {dt_local.day} de {MONTHS_ES[dt_local.month-1]})"
+                    elif days_from_now == 1:
+                        label = f"mañana ({DAYS_ES[dt_local.weekday()]} {dt_local.day} de {MONTHS_ES[dt_local.month-1]})"
+                    else:
+                        label = f"{DAYS_ES[dt_local.weekday()]} {dt_local.day} de {MONTHS_ES[dt_local.month-1]}"
+                    time_str = dt_local.strftime("%I:%M %p").lstrip("0").lower()
+
+                    slot_entry = {
+                        "date": date_key,
+                        "time": slot,
+                        "label": f"{label} a las {time_str}",
+                        "day_of_week": DAYS_ES[dt_local.weekday()]
+                    }
+                    formatted_slots.append(slot_entry)
+                    if dt_local.weekday() == 1:  # Tuesday
                         tuesday_slots.append(slot_entry)
                     else:
                         other_slots.append(slot_entry)
                 except Exception:
+                    slot_entry = {"date": date_key, "time": slot, "label": slot, "day_of_week": "?"}
+                    formatted_slots.append(slot_entry)
                     other_slots.append(slot_entry)
 
     if formatted_slots:
@@ -139,7 +156,7 @@ def handle_check_availability(args):
             "tuesday_slots": tuesday_slots[:5],
             "other_slots": other_slots[:10],
             "total_available": len(formatted_slots),
-            "message": "Horarios disponibles encontrados. Prioriza ofrecer los martes."
+            "message": "Horarios disponibles encontrados. Prioriza ofrecer los martes. Usa el campo 'label' para decirle al cliente el día y hora exactos."
         }
     else:
         return {
@@ -153,11 +170,15 @@ def handle_check_availability(args):
 
 
 def handle_get_contact(args):
-    """Search for a contact by phone number using V1 API."""
+    """Search for a contact by phone number using V2 API (query search).
+    
+    BUG FIXED: V1 API key was expired/invalid. Now uses V2 with PIT and 'query' param.
+    """
     phone = args.get("phone", "")
     if not phone:
         return {"found": False, "message": "Número de teléfono no proporcionado."}
 
+    # Normalize phone number
     phone_clean = phone.replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
     if not phone_clean.startswith("+"):
         phone_clean = phone_clean.lstrip("0")
@@ -168,10 +189,15 @@ def handle_get_contact(args):
         else:
             phone_clean = "+" + phone_clean
 
-    result = ghl_v1_get("contacts/lookup", {"phone": phone_clean})
+    result = ghl_v2_get(
+        "/contacts/",
+        params={"locationId": LOCATION_ID, "query": phone_clean},
+        contacts_version=True
+    )
 
-    if "contacts" in result and len(result["contacts"]) > 0:
-        contact = result["contacts"][0]
+    contacts = result.get("contacts", [])
+    if contacts:
+        contact = contacts[0]
         return {
             "found": True,
             "contactId": contact.get("id"),
@@ -185,7 +211,10 @@ def handle_get_contact(args):
 
 
 def handle_create_contact(args):
-    """Create a new contact in GHL using V1 API."""
+    """Create a new contact in GHL using V2 API.
+    
+    BUG FIXED: V1 API key was expired/invalid. Now uses V2 with PIT.
+    """
     data = {
         "locationId": LOCATION_ID,
         "firstName": args.get("firstName", ""),
@@ -196,7 +225,7 @@ def handle_create_contact(args):
     if args.get("email"):
         data["email"] = args["email"]
 
-    result = ghl_v1_post("contacts/", data)
+    result = ghl_v2_post("/contacts/", data, contacts_version=True)
 
     if "contact" in result:
         contact = result["contact"]
@@ -217,13 +246,12 @@ def handle_create_booking(args):
     if not contact_id or not start_time:
         return {"success": False, "message": "Se necesita contactId y startTime para agendar."}
 
-    # Calculate end time (30 min after start)
     try:
         dt_start = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
         dt_end = dt_start + timedelta(minutes=30)
         end_time = dt_end.isoformat()
     except Exception:
-        end_time = start_time  # fallback
+        end_time = start_time
 
     data = {
         "calendarId": CALENDAR_ID,
@@ -259,13 +287,12 @@ def handle_reschedule_appointment(args):
     if not new_start_time:
         return {"success": False, "message": "Se necesita el nuevo horario (newStartTime) para reagendar."}
 
-    # Calculate end time (30 min after start)
     try:
         dt_start = datetime.fromisoformat(new_start_time.replace("Z", "+00:00"))
         dt_end = dt_start + timedelta(minutes=30)
         end_time = dt_end.isoformat()
     except Exception:
-        end_time = new_start_time  # fallback
+        end_time = new_start_time
 
     data = {
         "startTime": new_start_time,
@@ -293,7 +320,10 @@ def handle_cancel_appointment(args):
     if not appointment_id:
         return {"success": False, "message": "Se necesita el appointmentId para cancelar."}
 
-    result = ghl_v2_put(f"/calendars/events/appointments/{appointment_id}", {"appointmentStatus": "cancelled"})
+    result = ghl_v2_put(
+        f"/calendars/events/appointments/{appointment_id}",
+        {"appointmentStatus": "cancelled"}
+    )
 
     if "id" in result:
         return {"success": True, "appointmentId": appointment_id, "message": "Cita cancelada exitosamente."}
@@ -310,7 +340,7 @@ def handle_get_appointment_by_contact(args):
 
     # GHL V2 returns 'events' key (not 'appointments')
     appointments = result.get("events", result.get("appointments", []))
-    # Filter to only this calendar and future appointments
+
     now = datetime.now(TZ)
     upcoming = []
     for a in appointments:
@@ -320,7 +350,6 @@ def handle_get_appointment_by_contact(args):
             continue
         start_str = a.get("startTime", "")
         try:
-            # GHL returns UTC strings like "2026-03-24 16:00:00"
             if " " in start_str:
                 start_str_iso = start_str.replace(" ", "T") + "+00:00"
             else:
@@ -352,7 +381,6 @@ def handle_get_appointment_by_contact(args):
 
 
 # ─── Tool Registry ────────────────────────────────────────────────────────────
-
 TOOL_HANDLERS = {
     "check_availability": handle_check_availability,
     "get_contact": handle_get_contact,
@@ -365,7 +393,6 @@ TOOL_HANDLERS = {
 
 
 # ─── Vapi Server URL Endpoint ─────────────────────────────────────────────────
-
 @app.route("/api/vapi/server-url", methods=["POST", "OPTIONS", "GET"])
 def vapi_server_url():
     """Main entry point for Vapi tool calls."""
@@ -444,43 +471,6 @@ def vapi_server_url():
 
             return jsonify({"result": json.dumps(result, ensure_ascii=False)}), 200, cors
 
-        elif message_type == "assistant-request":
-            # Inject today's date into the system prompt so Elena knows what day it is
-            now = datetime.now(TZ)
-            days_es = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
-            months_es = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
-                         "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
-            tomorrow = now + timedelta(days=1)
-            today_str = f"{days_es[now.weekday()]} {now.day} de {months_es[now.month-1]} de {now.year}"
-            tomorrow_str = f"{days_es[tomorrow.weekday()]} {tomorrow.day} de {months_es[tomorrow.month-1]} de {tomorrow.year}"
-
-            date_context = f"""\n\n## Fecha y Hora Actual (CRÍTICO)
-**HOY es {today_str}.** La zona horaria es Miami (Eastern Time).
-**MAÑANA es {tomorrow_str}.**
-Cuando el cliente diga "mañana", se refiere al {tomorrow.day} de {months_es[tomorrow.month-1]}.
-Cuando el cliente diga "hoy", se refiere al {now.day} de {months_es[now.month-1]}.
-USA SIEMPRE estas fechas como referencia al interpretar lo que dice el cliente."""
-
-            # Read the base system prompt from file or use stored version
-            base_prompt_path = os.path.join(os.path.dirname(__file__), "system_prompt.txt")
-            if os.path.exists(base_prompt_path):
-                with open(base_prompt_path, "r", encoding="utf-8") as f:
-                    base_prompt = f.read()
-            else:
-                base_prompt = "Eres Elena, asistente de Laser Place Miami."
-
-            full_prompt = base_prompt + date_context
-
-            return jsonify({
-                "assistant": {
-                    "model": {
-                        "provider": "openai",
-                        "model": "gpt-4o",
-                        "messages": [{"role": "system", "content": full_prompt}]
-                    }
-                }
-            }), 200, cors
-
         elif message_type in ["status-update", "end-of-call-report", "hang", "speech-update", "transcript"]:
             return jsonify({"status": "ok"}), 200, cors
 
@@ -491,13 +481,78 @@ USA SIEMPRE estas fechas como referencia al interpretar lo que dice el cliente."
         return jsonify({"error": str(e)}), 500, cors
 
 
+# ─── Date Update Endpoint ─────────────────────────────────────────────────────
+@app.route("/update-date", methods=["POST", "GET"])
+def update_date():
+    """Update the Vapi assistant system prompt with today's date.
+    
+    Call this endpoint once daily (e.g., via a cron job or Render cron) 
+    to keep Elena's date awareness current. Also called at server startup.
+    """
+    now = datetime.now(TZ)
+    tomorrow = now + timedelta(days=1)
+    today_str = f"{DAYS_ES[now.weekday()]} {now.day} de {MONTHS_ES[now.month-1]} de {now.year}"
+    tomorrow_str = f"{DAYS_ES[tomorrow.weekday()]} {tomorrow.day} de {MONTHS_ES[tomorrow.month-1]} de {tomorrow.year}"
+
+    date_section = f"""
+## ⚡ FECHA ACTUAL (ACTUALIZADO AUTOMÁTICAMENTE)
+**HOY es {today_str}.** Zona horaria: Miami, Florida (Eastern Time, UTC-4).
+**MAÑANA es {tomorrow_str}.**
+- Cuando el cliente diga **"mañana"** → se refiere al **{tomorrow.day} de {MONTHS_ES[tomorrow.month-1]} de {tomorrow.year}** ({DAYS_ES[tomorrow.weekday()]})
+- Cuando el cliente diga **"hoy"** → se refiere al **{now.day} de {MONTHS_ES[now.month-1]} de {now.year}** ({DAYS_ES[now.weekday()]})
+- Cuando el cliente diga **"esta semana"** → los días restantes de esta semana desde hoy
+**USA SIEMPRE estas fechas. NUNCA inventes ni asumas una fecha diferente.**
+
+"""
+
+    # Read base prompt (without any existing date section)
+    base_prompt_path = os.path.join(os.path.dirname(__file__), "system_prompt.txt")
+    if not os.path.exists(base_prompt_path):
+        return jsonify({"error": "system_prompt.txt not found"}), 500
+
+    with open(base_prompt_path, "r", encoding="utf-8") as f:
+        base_prompt = f.read()
+
+    # Insert date section after the title line (position 2)
+    lines = base_prompt.split("\n")
+    insert_pos = 2
+    new_lines = lines[:insert_pos] + date_section.split("\n") + lines[insert_pos:]
+    full_prompt = "\n".join(new_lines)
+
+    # Update Vapi assistant system prompt
+    resp = http_requests.patch(
+        f"https://api.vapi.ai/assistant/{VAPI_ASSISTANT_ID}",
+        headers={"Authorization": f"Bearer {VAPI_KEY}", "Content-Type": "application/json"},
+        json={"model": {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "messages": [{"role": "system", "content": full_prompt}]
+        }},
+        timeout=20
+    )
+
+    if resp.status_code == 200:
+        return jsonify({
+            "success": True,
+            "today": today_str,
+            "tomorrow": tomorrow_str,
+            "prompt_length": len(full_prompt)
+        })
+    else:
+        return jsonify({"success": False, "error": resp.text[:300]}), 500
+
+
+# ─── Health Check ─────────────────────────────────────────────────────────────
 @app.route("/health", methods=["GET"])
 def health():
+    now = datetime.now(TZ)
     return jsonify({
         "status": "healthy",
-        "service": "Elena AI Tool Server",
+        "service": "Elena AI Tool Server v11",
         "using_pit": bool(GHL_PIT),
-        "calendar_id": CALENDAR_ID
+        "calendar_id": CALENDAR_ID,
+        "current_time_miami": now.strftime("%Y-%m-%d %H:%M %Z"),
+        "today": f"{DAYS_ES[now.weekday()]} {now.day} de {MONTHS_ES[now.month-1]} de {now.year}"
     })
 
 
