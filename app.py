@@ -58,7 +58,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.1"
+SERVER_VERSION = "v17.2"
 
 
 def v2_headers():
@@ -740,28 +740,29 @@ def _process_end_of_call(message):
                 if contact_result.get("found"):
                     contact_id = contact_result.get("contactId", "")
 
-        # ── Step 4: Apply outcome tag to GHL contact ──────────────────────────
-        # The 'Vapi - Procesador' GHL workflow listens for these tags and:
-        #   - Updates pipeline stage
-        #   - Writes to Elena Dashboard sheet
-        #   - Writes to Consultas Agendadas sheet (if agendo)
+        # ── Step 4: Write custom fields, then apply outcome tag ─────────────────
+        # CRITICAL ORDER: custom fields MUST be written BEFORE the tag is added.
+        # The GHL workflow ('Vapi - Procesador') fires the instant it detects the tag.
+        # If the tag is added first, the workflow reads empty fields — race condition.
+        # Fix: write all fields first, then trigger the workflow via tag.
         if contact_id:
+            # Step 4a: Write all custom fields first
+            _update_contact_custom_field(contact_id, "elena_outcome", outcome_label)
+            _update_contact_custom_field(contact_id, "elena_stage", stage)
+            _update_contact_custom_field(contact_id, "elena_summary", summary[:1000] if summary else "")
+            _update_contact_custom_field(contact_id, "elena_ended_reason", ended_reason)
+            if call_id:
+                _update_contact_custom_field(contact_id, "elena_call_id", call_id)
+            if appointment_id:
+                _update_contact_custom_field(contact_id, "elena_appointment_id", appointment_id)
+
+            # Step 4b: NOW add the tag — this triggers the GHL workflow which reads the fields above
             if agendo:
                 _add_tag_to_contact(contact_id, "agendo_consulta_botox")
             elif ended_reason in ("silence-timed-out", "voicemail", "no-answer"):
                 _add_tag_to_contact(contact_id, "no_contesto_botox")
             else:
                 _add_tag_to_contact(contact_id, "no_agendo_botox")
-
-            # Store outcome details as custom fields — read by GHL workflow
-            _update_contact_custom_field(contact_id, "elena_outcome", outcome_label)
-            _update_contact_custom_field(contact_id, "elena_stage", stage)
-            _update_contact_custom_field(contact_id, "elena_summary", summary[:500] if summary else "")
-            _update_contact_custom_field(contact_id, "elena_ended_reason", ended_reason)
-            if call_id:
-                _update_contact_custom_field(contact_id, "elena_call_id", call_id)
-            if appointment_id:
-                _update_contact_custom_field(contact_id, "elena_appointment_id", appointment_id)
             # Save full transcript as a note on the GHL contact
             # This allows team members to read the full conversation from GHL
             if transcript:
