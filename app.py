@@ -694,7 +694,18 @@ def _process_end_of_call(message):
         transcript = artifact.get("transcript", "")
         call_id = call.get("id", "")
         customer_phone = call.get("customer", {}).get("number", "")
-        call_duration = call.get("endedAt", "")
+        # Calculate call duration in seconds from startedAt / endedAt timestamps
+        call_duration_secs = 0
+        try:
+            started_at = call.get("startedAt", "")
+            ended_at = call.get("endedAt", "")
+            if started_at and ended_at:
+                from datetime import timezone as _tz_mod
+                _started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                _ended = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
+                call_duration_secs = (_ended - _started).total_seconds()
+        except Exception:
+            call_duration_secs = 0
         # Detect inbound vs outbound
         raw_call_type = call.get("type", "")
         if "inbound" in raw_call_type.lower():
@@ -761,10 +772,17 @@ def _process_end_of_call(message):
             m.get("role") == "user" or m.get("role") == "human"
             for m in messages_list
         )
+        # Calls under 20 seconds are treated as no_contesto regardless of who spoke
+        short_call = call_duration_secs < 20
         if agendo:
             outcome = "agendo"
             outcome_label = "Agendó"
             stage = "Consulta Agendada"
+        elif short_call:
+            # Call too short to have had a real conversation — treat as no answer
+            outcome = "no_contesto"
+            outcome_label = "No Contestó"
+            stage = "Llamada 1"
         elif ended_reason in ("silence-timed-out", "voicemail", "no-answer"):
             if user_spoke:
                 # User answered and spoke, but call dropped due to silence mid-conversation
@@ -815,7 +833,7 @@ def _process_end_of_call(message):
             # Step 4b: NOW add the tag — this triggers the GHL workflow which reads the fields above
             if agendo:
                 _add_tag_to_contact(contact_id, "agendo_consulta_botox")
-            elif ended_reason in ("silence-timed-out", "voicemail", "no-answer"):
+            elif outcome == "no_contesto":
                 _add_tag_to_contact(contact_id, "no_contesto_botox")
             else:
                 _add_tag_to_contact(contact_id, "no_agendo_botox")
