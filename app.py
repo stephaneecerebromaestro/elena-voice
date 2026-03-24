@@ -58,7 +58,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.5"
+SERVER_VERSION = "v17.6"
 
 
 def v2_headers():
@@ -669,6 +669,14 @@ def _process_end_of_call(message):
         call_id = call.get("id", "")
         customer_phone = call.get("customer", {}).get("number", "")
         call_duration = call.get("endedAt", "")
+        # Detect inbound vs outbound
+        raw_call_type = call.get("type", "")
+        if "inbound" in raw_call_type.lower():
+            call_type = "Inbound"
+        elif "outbound" in raw_call_type.lower():
+            call_type = "Outbound"
+        else:
+            call_type = "Outbound"  # default for backwards compatibility
 
         # ── Step 1: Detect if create_booking was called successfully ──────────
         # Vapi sends tool results in multiple formats depending on version.
@@ -759,6 +767,7 @@ def _process_end_of_call(message):
             _update_contact_custom_field(contact_id, "elena_stage", stage)
             _update_contact_custom_field(contact_id, "elena_summary", summary[:1000] if summary else "")
             _update_contact_custom_field(contact_id, "elena_ended_reason", ended_reason)
+            _update_contact_custom_field(contact_id, "elena_call_type", call_type)
             if call_id:
                 _update_contact_custom_field(contact_id, "elena_call_id", call_id)
             if appointment_id:
