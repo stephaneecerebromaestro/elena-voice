@@ -58,7 +58,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.3"
+SERVER_VERSION = "v17.4"
 
 
 def v2_headers():
@@ -266,12 +266,13 @@ def handle_get_contact(args):
     """
     phone = args.get("phone", "")
     caller_phone = args.get("callerPhone", "")  # FIX A: real caller phone injected by server
-
     # Normalize the provided phone
     phone_normalized, phone_valid = normalize_phone(phone)
     
-    # FIX A+B: If provided phone is invalid/fake, use the real caller phone
-    if not phone_valid and caller_phone:
+    # FIX A+B+K: If phone is empty OR invalid/fake, use the real caller phone
+    # This prevents Elena from hallucinating a phone number — she should call
+    # get_contact without a phone argument and the server uses the real caller number.
+    if (not phone or not phone_valid) and caller_phone:
         phone_normalized, phone_valid = normalize_phone(caller_phone)
         if phone_valid:
             phone = caller_phone  # Use real caller phone
