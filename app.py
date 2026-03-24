@@ -39,6 +39,7 @@ import requests as http_requests
 import json
 import os
 import re
+import threading
 from datetime import datetime, timedelta
 import pytz
 
@@ -58,7 +59,13 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.7"
+SERVER_VERSION = "v17.8"
+
+# ─── Idempotency lock for create_contact ──────────────────────────────────────
+# Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
+_create_contact_locks = {}  # phone_normalized -> threading.Lock()
+_create_contact_results = {}  # phone_normalized -> result dict
+_create_contact_lock_meta = threading.Lock()  # protects the dicts above
 
 
 def v2_headers():
@@ -342,35 +349,51 @@ def handle_create_contact(args):
             "message": f"El número '{phone}' parece inválido o de prueba. Pídele al cliente su número real con código de área (10 dígitos)."
         }
     
-    # Check if contact already exists to avoid duplicates
-    existing = handle_get_contact({"phone": phone_normalized, "callerPhone": caller_phone})
-    if existing.get("found"):
-        return {
-            "success": True,
-            "contactId": existing["contactId"],
-            "message": f"Contacto ya existe: {existing.get('firstName','')} {existing.get('lastName','')}. Usando contacto existente."
-        }
-    
-    data = {
-        "locationId": LOCATION_ID,
-        "firstName": args.get("firstName", ""),
-        "lastName": args.get("lastName", ""),
-        "phone": phone_normalized,
-        "source": "AI Elena - Llamada"
-    }
-    if email:
-        data["email"] = email.strip()
+    # ── Idempotency lock: prevent duplicate creation when LLM calls twice in parallel ──
+    with _create_contact_lock_meta:
+        if phone_normalized not in _create_contact_locks:
+            _create_contact_locks[phone_normalized] = threading.Lock()
+        phone_lock = _create_contact_locks[phone_normalized]
 
-    result = ghl_v2_post("/contacts/", data, contacts_version=True)
+    with phone_lock:
+        # If a parallel call already completed for this phone, return cached result
+        if phone_normalized in _create_contact_results:
+            cached = _create_contact_results[phone_normalized]
+            return {**cached, "message": cached.get("message", "") + " (cached)"}
 
-    if "contact" in result:
-        contact = result["contact"]
-        return {
-            "success": True,
-            "contactId": contact.get("id"),
-            "message": f"Contacto creado: {contact.get('firstName', '')} {contact.get('lastName', '')}"
+        # Check if contact already exists to avoid duplicates
+        existing = handle_get_contact({"phone": phone_normalized, "callerPhone": caller_phone})
+        if existing.get("found"):
+            result = {
+                "success": True,
+                "contactId": existing["contactId"],
+                "message": f"Contacto ya existe: {existing.get('firstName','')} {existing.get('lastName','')}. Usando contacto existente."
+            }
+            _create_contact_results[phone_normalized] = result
+            return result
+
+        data = {
+            "locationId": LOCATION_ID,
+            "firstName": args.get("firstName", ""),
+            "lastName": args.get("lastName", ""),
+            "phone": phone_normalized,
+            "source": "AI Elena - Llamada"
         }
-    return {"success": False, "message": f"No se pudo crear el contacto: {str(result)[:200]}"}
+        if email:
+            data["email"] = email.strip()
+
+        api_result = ghl_v2_post("/contacts/", data, contacts_version=True)
+
+        if "contact" in api_result:
+            contact = api_result["contact"]
+            result = {
+                "success": True,
+                "contactId": contact.get("id"),
+                "message": f"Contacto creado: {contact.get('firstName', '')} {contact.get('lastName', '')}"
+            }
+            _create_contact_results[phone_normalized] = result
+            return result
+        return {"success": False, "message": f"No se pudo crear el contacto: {str(api_result)[:200]}"}
 
 
 def handle_create_booking(args):
