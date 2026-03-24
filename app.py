@@ -58,7 +58,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17"
+SERVER_VERSION = "v17.1"
 
 
 def v2_headers():
@@ -622,6 +622,20 @@ def _update_contact_custom_field(contact_id, field_key, value):
         return False
 
 
+def _add_note_to_contact(contact_id, note_body):
+    """Add a note to a GHL contact via V2 API."""
+    try:
+        url = f"{GHL_V2_BASE}/contacts/{contact_id}/notes"
+        resp = http_requests.post(
+            url,
+            headers=v2_headers_contacts(),
+            json={"body": note_body},
+            timeout=15
+        )
+        return resp.status_code in (200, 201)
+    except Exception:
+        return False
+
 def _process_end_of_call(message):
     """
     Process end-of-call-report from Vapi.
@@ -642,7 +656,9 @@ def _process_end_of_call(message):
         artifact = message.get("artifact", {})
         messages_list = artifact.get("messages", call.get("messages", []))
         ended_reason = call.get("endedReason", message.get("endedReason", ""))
-        summary = artifact.get("summary", call.get("summary", ""))
+        summary = message.get("analysis", {}).get("summary", "") or artifact.get("summary", call.get("summary", ""))
+        transcript = artifact.get("transcript", "")
+        call_id = call.get("id", "")
         customer_phone = call.get("customer", {}).get("number", "")
         call_duration = call.get("endedAt", "")
 
@@ -737,14 +753,31 @@ def _process_end_of_call(message):
             else:
                 _add_tag_to_contact(contact_id, "no_agendo_botox")
 
-            # Also store outcome details as custom fields for the workflow to use
-            # These are read by the GHL workflow via {{contact.outcome_label}} etc.
+            # Store outcome details as custom fields — read by GHL workflow
             _update_contact_custom_field(contact_id, "elena_outcome", outcome_label)
             _update_contact_custom_field(contact_id, "elena_stage", stage)
             _update_contact_custom_field(contact_id, "elena_summary", summary[:500] if summary else "")
             _update_contact_custom_field(contact_id, "elena_ended_reason", ended_reason)
+            if call_id:
+                _update_contact_custom_field(contact_id, "elena_call_id", call_id)
             if appointment_id:
                 _update_contact_custom_field(contact_id, "elena_appointment_id", appointment_id)
+            # Save full transcript as a note on the GHL contact
+            # This allows team members to read the full conversation from GHL
+            if transcript:
+                from datetime import datetime as _dt
+                import pytz as _pytz
+                _tz = _pytz.timezone("America/New_York")
+                _now = _dt.now(_tz).strftime("%Y-%m-%d %H:%M EDT")
+                note = (
+                    f"--- LLAMADA DE ELENA AI ({_now}) ---\n"
+                    f"Resultado: {outcome_label}\n"
+                    f"Motivo de fin: {ended_reason}\n"
+                    f"Resumen: {summary}\n"
+                    f"Call ID Vapi: {call_id}\n\n"
+                    f"TRANSCRIPCIÓN COMPLETA:\n{transcript}"
+                )
+                _add_note_to_contact(contact_id, note)
 
     except Exception:
         pass  # Never fail the webhook response because of post-call processing
