@@ -58,7 +58,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.6"
+SERVER_VERSION = "v17.7"
 
 
 def v2_headers():
@@ -730,14 +730,27 @@ def _process_end_of_call(message):
                 break
 
         # ── Step 2: Determine outcome label ──────────────────────────────────
+        # Detect if the user actually spoke during the call (vs pure no-answer)
+        user_spoke = any(
+            m.get("role") == "user" or m.get("role") == "human"
+            for m in messages_list
+        )
         if agendo:
             outcome = "agendo"
             outcome_label = "Agendó"
             stage = "Consulta Agendada"
         elif ended_reason in ("silence-timed-out", "voicemail", "no-answer"):
-            outcome = "no_contesto"
-            outcome_label = "No Contestó"
-            stage = "Llamada 1"
+            if user_spoke:
+                # User answered and spoke, but call dropped due to silence mid-conversation
+                # (e.g. during check_availability tool call) — treat as Rechazó, not No Contestó
+                outcome = "rechazo"
+                outcome_label = "Rechazó"
+                stage = "Poco Interes"
+            else:
+                # Truly no answer — user never spoke
+                outcome = "no_contesto"
+                outcome_label = "No Contestó"
+                stage = "Llamada 1"
         elif ended_reason in ("customer-ended-call", "assistant-ended-call"):
             outcome = "rechazo"
             outcome_label = "Rechazó"
