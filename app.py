@@ -58,7 +58,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.4"
+SERVER_VERSION = "v17.5"
 
 
 def v2_headers():
@@ -414,20 +414,25 @@ def handle_create_booking(args):
     try:
         dt_start = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
         dt_end = dt_start + timedelta(minutes=30)
-        end_time = dt_end.isoformat()
+        # FIX TZ: GHL ignores the UTC offset and treats the time as UTC directly.
+        # Convert to UTC before sending so the appointment lands at the correct local time.
+        dt_start_utc = dt_start.astimezone(pytz.utc)
+        dt_end_utc = dt_end.astimezone(pytz.utc)
+        start_time_utc = dt_start_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        end_time_utc = dt_end_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00")
     except Exception:
-        end_time = start_time
-
+        start_time_utc = start_time
+        end_time_utc = start_time
     data = {
         "calendarId": CALENDAR_ID,
         "locationId": LOCATION_ID,
         "contactId": contact_id,
-        "startTime": start_time,
-        "endTime": end_time,
+        "startTime": start_time_utc,
+        "endTime": end_time_utc,
         "title": title,
         "appointmentStatus": "confirmed",
         "selectedTimezone": "America/New_York",
-        "selectedSlot": start_time
+        "selectedSlot": start_time_utc
     }
 
     result = ghl_v2_post("/calendars/events/appointments", data)
@@ -457,16 +462,20 @@ def handle_reschedule_appointment(args):
     try:
         dt_start = datetime.fromisoformat(new_start_time.replace("Z", "+00:00"))
         dt_end = dt_start + timedelta(minutes=30)
-        end_time = dt_end.isoformat()
+        # FIX TZ: Convert to UTC before sending — GHL ignores offset and treats as UTC directly.
+        dt_start_utc = dt_start.astimezone(pytz.utc)
+        dt_end_utc = dt_end.astimezone(pytz.utc)
+        new_start_utc = dt_start_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        end_time_utc = dt_end_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00")
     except Exception:
-        end_time = new_start_time
-
+        new_start_utc = new_start_time
+        end_time_utc = new_start_time
     data = {
-        "startTime": new_start_time,
-        "endTime": end_time,
+        "startTime": new_start_utc,
+        "endTime": end_time_utc,
         "calendarId": CALENDAR_ID,
         "selectedTimezone": "America/New_York",
-        "selectedSlot": new_start_time
+        "selectedSlot": new_start_utc
     }
 
     result = ghl_v2_put(f"/calendars/events/appointments/{appointment_id}", data)
