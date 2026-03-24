@@ -556,12 +556,14 @@ def handle_get_appointment_by_contact(args):
         start_str = a.get("startTime", "")
         try:
             if " " in start_str:
-                start_str_iso = start_str.replace(" ", "T") + "+00:00"
+                # GHL returns "YYYY-MM-DD HH:MM:SS" in the calendar's local timezone (America/New_York)
+                start_str_iso = start_str.replace(" ", "T")
             else:
                 start_str_iso = start_str
             dt = datetime.fromisoformat(start_str_iso)
             if dt.tzinfo is None:
-                dt = pytz.utc.localize(dt)
+                # Localize to Miami time (TZ), not UTC
+                dt = TZ.localize(dt)
             if dt > now:
                 upcoming.append((dt, a))
         except Exception:
@@ -577,7 +579,8 @@ def handle_get_appointment_by_contact(args):
     for dt_appt, appt in upcoming:
         start_raw = appt.get("startTime", "")
         if " " in start_raw:
-            start_raw = start_raw.replace(" ", "T") + "+00:00"
+            # Keep the original format but with T, don't add +00:00 as it's not UTC
+            start_raw = start_raw.replace(" ", "T")
         dt_local = dt_appt.astimezone(TZ)
         time_str = dt_local.strftime("%I:%M %p").lstrip("0").lower()
         human_time = f"{DAYS_ES[dt_local.weekday()]} {dt_local.day} de {MONTHS_ES[dt_local.month-1]} a las {time_str}"
