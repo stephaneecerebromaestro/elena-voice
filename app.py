@@ -58,7 +58,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.2"
+SERVER_VERSION = "v17.3"
 
 
 def v2_headers():
@@ -435,8 +435,6 @@ def handle_create_booking(args):
         appt = result if "id" in result else result.get("appointment", {})
         human_time = _format_local_time(start_time)
         appt_id = appt.get("id", "")
-        # Write to Consultas Agendadas sheet
-        _write_consultas_sheet(args, start_time)
         return {
             "success": True,
             "appointmentId": appt_id,
