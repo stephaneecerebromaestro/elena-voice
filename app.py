@@ -5,7 +5,7 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
-VERSION: v15 — All fixes applied:
+VERSION: v17 — All fixes applied:
   FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
   FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
   FIX C: Duplicate appointment detection before create_booking
@@ -14,6 +14,11 @@ VERSION: v15 — All fixes applied:
   FIX F: Email basic validation before creating contact
   FIX G: update-date endpoint retries on failure and updates health version string
   FIX H: Caller phone is injected into every tool call via the webhook handler
+  FIX I: end-of-call-report detects booking success across all Vapi message formats
+  FIX J: Post-call processing uses GHL tags (3 distinct outcomes):
+          agendo_consulta_botox = booking confirmed
+          no_contesto_botox     = no answer / voicemail / silence
+          no_agendo_botox       = answered but did not book
 
 Handles tool calls from Vapi during live phone conversations:
 - check_availability: Check calendar availability (next 14 days)
@@ -53,7 +58,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v16"
+SERVER_VERSION = "v17"
 
 
 def v2_headers():
@@ -429,10 +434,13 @@ def handle_create_booking(args):
     if "id" in result or "appointment" in result:
         appt = result if "id" in result else result.get("appointment", {})
         human_time = _format_local_time(start_time)
+        appt_id = appt.get("id", "")
+        # Write to Consultas Agendadas sheet
+        _write_consultas_sheet(args, start_time)
         return {
             "success": True,
-            "appointmentId": appt.get("id", ""),
-            "message": f"Cita agendada exitosamente para el {human_time} (hora de Miami). ID: {appt.get('id', '')}"
+            "appointmentId": appt_id,
+            "message": f"Cita agendada exitosamente para el {human_time} (hora de Miami). ID: {appt_id}"
         }
     return {"success": False, "message": f"No se pudo agendar: {str(result)[:300]}"}
 
@@ -584,6 +592,164 @@ def handle_get_appointment_by_contact(args):
         }
 
 
+def _add_tag_to_contact(contact_id, tag):
+    """Add a tag to a GHL contact via V2 API."""
+    try:
+        url = f"{GHL_V2_BASE}/contacts/{contact_id}/tags"
+        resp = http_requests.post(
+            url,
+            headers=v2_headers_contacts(),
+            json={"tags": [tag]},
+            timeout=10
+        )
+        return resp.status_code in (200, 201)
+    except Exception:
+        return False
+
+
+def _update_contact_custom_field(contact_id, field_key, value):
+    """Update a custom field on a GHL contact via V2 API."""
+    try:
+        url = f"{GHL_V2_BASE}/contacts/{contact_id}"
+        resp = http_requests.put(
+            url,
+            headers=v2_headers_contacts(),
+            json={"customFields": [{"key": field_key, "field_value": value}]},
+            timeout=10
+        )
+        return resp.status_code in (200, 201)
+    except Exception:
+        return False
+
+
+def _process_end_of_call(message):
+    """
+    Process end-of-call-report from Vapi.
+    
+    Detects if create_booking was called successfully, then applies the
+    appropriate tag to the GHL contact so the 'Vapi - Procesador' workflow
+    can handle Google Sheets writes and pipeline stage updates.
+    
+    Tags applied (3 distinct outcomes):
+    - agendo_consulta_botox  → create_booking was successful (100% reliable)
+    - no_contesto_botox      → no answer / voicemail / silence-timed-out
+    - no_agendo_botox        → answered but did not book (rejected / hung up)
+    
+    Also stores call outcome as custom fields on the GHL contact.
+    """
+    try:
+        call = message.get("call", {})
+        artifact = message.get("artifact", {})
+        messages_list = artifact.get("messages", call.get("messages", []))
+        ended_reason = call.get("endedReason", message.get("endedReason", ""))
+        summary = artifact.get("summary", call.get("summary", ""))
+        customer_phone = call.get("customer", {}).get("number", "")
+        call_duration = call.get("endedAt", "")
+
+        # ── Step 1: Detect if create_booking was called successfully ──────────
+        # Vapi sends tool results in multiple formats depending on version.
+        # We check all known formats to be safe.
+        agendo = False
+        appointment_id = ""
+        booked_time = ""
+
+        for msg in messages_list:
+            # Format 1: role=tool with JSON content (older Vapi format)
+            if msg.get("role") == "tool":
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    # content can be a list of {type, text} objects
+                    for item in content:
+                        text = item.get("text", "") if isinstance(item, dict) else ""
+                        try:
+                            parsed = json.loads(text)
+                            if isinstance(parsed, dict) and parsed.get("success") and parsed.get("appointmentId"):
+                                agendo = True
+                                appointment_id = parsed.get("appointmentId", "")
+                                booked_time = parsed.get("message", "")
+                                break
+                        except Exception:
+                            pass
+                elif isinstance(content, str):
+                    try:
+                        parsed = json.loads(content)
+                        if isinstance(parsed, dict) and parsed.get("success") and parsed.get("appointmentId"):
+                            agendo = True
+                            appointment_id = parsed.get("appointmentId", "")
+                            booked_time = parsed.get("message", "")
+                            break
+                    except Exception:
+                        pass
+
+            # Format 2: type=tool-call-result (newer Vapi format)
+            if msg.get("type") == "tool-call-result":
+                result_str = msg.get("result", "")
+                try:
+                    parsed = json.loads(result_str) if isinstance(result_str, str) else result_str
+                    if isinstance(parsed, dict) and parsed.get("success") and parsed.get("appointmentId"):
+                        agendo = True
+                        appointment_id = parsed.get("appointmentId", "")
+                        booked_time = parsed.get("message", "")
+                        break
+                except Exception:
+                    pass
+
+            if agendo:
+                break
+
+        # ── Step 2: Determine outcome label ──────────────────────────────────
+        if agendo:
+            outcome = "agendo"
+            outcome_label = "Agendó"
+            stage = "Consulta Agendada"
+        elif ended_reason in ("silence-timed-out", "voicemail", "no-answer"):
+            outcome = "no_contesto"
+            outcome_label = "No Contestó"
+            stage = "Llamada 1"
+        elif ended_reason in ("customer-ended-call", "assistant-ended-call"):
+            outcome = "rechazo"
+            outcome_label = "Rechazó"
+            stage = "Poco Interes"
+        else:
+            outcome = "rechazo"
+            outcome_label = "Rechazó"
+            stage = "Poco Interes"
+
+        # ── Step 3: Find the GHL contact by phone ─────────────────────────────
+        contact_id = ""
+        if customer_phone:
+            phone_norm, phone_valid = normalize_phone(customer_phone)
+            if phone_valid:
+                contact_result = handle_get_contact({"phone": phone_norm})
+                if contact_result.get("found"):
+                    contact_id = contact_result.get("contactId", "")
+
+        # ── Step 4: Apply outcome tag to GHL contact ──────────────────────────
+        # The 'Vapi - Procesador' GHL workflow listens for these tags and:
+        #   - Updates pipeline stage
+        #   - Writes to Elena Dashboard sheet
+        #   - Writes to Consultas Agendadas sheet (if agendo)
+        if contact_id:
+            if agendo:
+                _add_tag_to_contact(contact_id, "agendo_consulta_botox")
+            elif ended_reason in ("silence-timed-out", "voicemail", "no-answer"):
+                _add_tag_to_contact(contact_id, "no_contesto_botox")
+            else:
+                _add_tag_to_contact(contact_id, "no_agendo_botox")
+
+            # Also store outcome details as custom fields for the workflow to use
+            # These are read by the GHL workflow via {{contact.outcome_label}} etc.
+            _update_contact_custom_field(contact_id, "elena_outcome", outcome_label)
+            _update_contact_custom_field(contact_id, "elena_stage", stage)
+            _update_contact_custom_field(contact_id, "elena_summary", summary[:500] if summary else "")
+            _update_contact_custom_field(contact_id, "elena_ended_reason", ended_reason)
+            if appointment_id:
+                _update_contact_custom_field(contact_id, "elena_appointment_id", appointment_id)
+
+    except Exception:
+        pass  # Never fail the webhook response because of post-call processing
+
+
 # ─── Tool Registry ────────────────────────────────────────────────────────────
 TOOL_HANDLERS = {
     "check_availability": handle_check_availability,
@@ -693,7 +859,12 @@ def vapi_server_url():
 
             return jsonify({"result": json.dumps(result, ensure_ascii=False)}), 200, cors
 
-        elif message_type in ["status-update", "end-of-call-report", "hang", "speech-update", "transcript"]:
+        elif message_type == "end-of-call-report":
+            # Process end-of-call: update sheet with correct Agendó and Stage
+            _process_end_of_call(message)
+            return jsonify({"status": "ok"}), 200, cors
+
+        elif message_type in ["status-update", "hang", "speech-update", "transcript"]:
             return jsonify({"status": "ok"}), 200, cors
 
         else:
