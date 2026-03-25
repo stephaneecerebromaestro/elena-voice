@@ -775,6 +775,7 @@ def _process_end_of_call(message):
         # Calls under 20 seconds are treated as no_contesto regardless of who spoke
         short_call = call_duration_secs < 20
         if agendo:
+            # Booking confirmed — highest priority, overrides everything
             outcome = "agendo"
             outcome_label = "Agendó"
             stage = "Consulta Agendada"
@@ -783,25 +784,16 @@ def _process_end_of_call(message):
             outcome = "no_contesto"
             outcome_label = "No Contestó"
             stage = "Llamada 1"
-        elif ended_reason in ("silence-timed-out", "voicemail", "no-answer"):
-            if user_spoke:
-                # User answered and spoke, but call dropped due to silence mid-conversation
-                # (e.g. during check_availability tool call) — treat as Rechazó, not No Contestó
-                outcome = "rechazo"
-                outcome_label = "Rechazó"
-                stage = "Poco Interes"
-            else:
-                # Truly no answer — user never spoke
-                outcome = "no_contesto"
-                outcome_label = "No Contestó"
-                stage = "Llamada 1"
-        elif ended_reason in ("customer-ended-call", "assistant-ended-call"):
-            outcome = "rechazo"
-            outcome_label = "Rechazó"
-            stage = "Poco Interes"
+        elif ended_reason in ("silence-timed-out", "voicemail", "no-answer") and not user_spoke:
+            # Pure no-answer: voicemail, no-answer, or silence with no user speech at all
+            outcome = "no_contesto"
+            outcome_label = "No Contestó"
+            stage = "Llamada 1"
         else:
-            outcome = "rechazo"
-            outcome_label = "Rechazó"
+            # All other cases: user spoke but didn't book, call dropped mid-conversation,
+            # client hung up, Elena hung up, or any unrecognized endedReason
+            outcome = "no_agendo"
+            outcome_label = "No Agendó"
             stage = "Poco Interes"
 
         # ── Step 3: Find the GHL contact by phone ─────────────────────────────
@@ -830,13 +822,14 @@ def _process_end_of_call(message):
             if appointment_id:
                 _update_contact_custom_field(contact_id, "elena_appointment_id", appointment_id)
 
-            # Step 4b: NOW add the tag — this triggers the GHL workflow which reads the fields above
-            if agendo:
-                _add_tag_to_contact(contact_id, "agendo_consulta_botox")
-            elif outcome == "no_contesto":
-                _add_tag_to_contact(contact_id, "no_contesto_botox")
-            else:
-                _add_tag_to_contact(contact_id, "no_agendo_botox")
+            # Step 4b: Write elena_last_outcome custom field, then add generic trigger tag.
+            # ARCHITECTURE: elena_last_outcome is the source of truth (single value, no accumulation).
+            # elena_resultado_botox is a generic tag used only to fire the GHL workflow trigger.
+            # The workflow reads elena_last_outcome (not the tag) to decide which branch to take.
+            # The workflow removes elena_resultado_botox at the end of each branch so it can
+            # re-trigger on the next call.
+            _update_contact_custom_field(contact_id, "elena_last_outcome", outcome)
+            _add_tag_to_contact(contact_id, "elena_resultado_botox")
             # Save full transcript as a note on the GHL contact
             # This allows team members to read the full conversation from GHL
             if transcript:
