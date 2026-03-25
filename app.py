@@ -59,7 +59,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.17"
+SERVER_VERSION = "v17.18"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -813,25 +813,27 @@ def _process_end_of_call(message):
         # Voicemail / no-answer detection: Elena ended the call AND duration < 45s.
         # We use 45s because voicemail greetings + Elena's goodbye can last up to ~40s.
         # We do NOT rely on user_spoke here because Vapi transcribes voicemail audio as role=user.
+        # FIX1: duration_reliable is no longer required — Vapi sometimes omits startedAt/endedAt.
+        # When timestamps are missing, we trust endedReason alone for voicemail detection.
+        # If duration IS available, we still enforce the 45s cap as a safety check.
         voicemail_by_elena = (
             ended_reason in (
                 "assistant-ended-call",
                 "assistant-ended-call-after-message-spoken",
                 "assistant-said-end-call-phrase"
             )
-            and duration_reliable
-            and call_duration_secs < 45
+            and (not duration_reliable or call_duration_secs < 45)
         )
 
         # Voicemail that hangs up by itself: customer-ended-call with no user speech.
         # This happens when a voicemail system picks up and then disconnects after Elena speaks.
         # Duration can be up to ~60s (voicemail greeting + Elena talking + voicemail timeout).
         # We do NOT apply this if user_spoke=True because that means a real person answered.
+        # FIX1: duration_reliable is no longer required for the same reason as above.
         voicemail_by_customer = (
             ended_reason == "customer-ended-call"
             and not user_spoke
-            and duration_reliable
-            and call_duration_secs < 60
+            and (not duration_reliable or call_duration_secs < 60)
         )
 
         if agendo:
@@ -845,13 +847,25 @@ def _process_end_of_call(message):
             outcome_label = "No Contestó"
             stage = "Llamada 1"
         elif ended_reason in (
-            "silence-timed-out", "voicemail", "no-answer",
+            "voicemail", "no-answer",
             "customer-did-not-answer", "customer-busy"
         ):
-            # Pure no-answer: voicemail, no-answer, busy, or silence
+            # Pure no-answer: voicemail, no-answer, busy
             outcome = "no_contesto"
             outcome_label = "No Contestó"
             stage = "Llamada 1"
+        elif ended_reason == "silence-timed-out" and not user_spoke:
+            # FIX2: silence-timed-out with NO user speech = pure no-answer (buzón o nadie contestó)
+            outcome = "no_contesto"
+            outcome_label = "No Contestó"
+            stage = "Llamada 1"
+        elif ended_reason == "silence-timed-out" and user_spoke:
+            # FIX2: silence-timed-out AFTER user spoke = real conversation that dropped mid-call
+            # (e.g. client said "llámenme en una hora" and Elena went silent)
+            # This is no_agendo — the client engaged but no appointment was made
+            outcome = "no_agendo"
+            outcome_label = "No Agendó"
+            stage = "Poco Interes"
         elif voicemail_by_elena:
             # Elena ended the call within 45s — almost certainly a voicemail/answering machine
             # even if Vapi transcribed the voicemail audio as a user message
