@@ -59,7 +59,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.16"
+SERVER_VERSION = "v17.17"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -823,6 +823,17 @@ def _process_end_of_call(message):
             and call_duration_secs < 45
         )
 
+        # Voicemail that hangs up by itself: customer-ended-call with no user speech.
+        # This happens when a voicemail system picks up and then disconnects after Elena speaks.
+        # Duration can be up to ~60s (voicemail greeting + Elena talking + voicemail timeout).
+        # We do NOT apply this if user_spoke=True because that means a real person answered.
+        voicemail_by_customer = (
+            ended_reason == "customer-ended-call"
+            and not user_spoke
+            and duration_reliable
+            and call_duration_secs < 60
+        )
+
         if agendo:
             # Booking confirmed — highest priority, overrides everything
             outcome = "agendo"
@@ -844,6 +855,11 @@ def _process_end_of_call(message):
         elif voicemail_by_elena:
             # Elena ended the call within 45s — almost certainly a voicemail/answering machine
             # even if Vapi transcribed the voicemail audio as a user message
+            outcome = "no_contesto"
+            outcome_label = "No Contestó"
+            stage = "Llamada 1"
+        elif voicemail_by_customer:
+            # Voicemail system picked up and disconnected — customer-ended-call, no user speech, < 60s
             outcome = "no_contesto"
             outcome_label = "No Contestó"
             stage = "Llamada 1"
