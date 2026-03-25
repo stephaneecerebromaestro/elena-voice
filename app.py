@@ -59,13 +59,14 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.14"
+SERVER_VERSION = "v17.15"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
 _create_contact_locks = {}  # phone_normalized -> threading.Lock()
-_create_contact_results = {}  # phone_normalized -> result dict (cleared on server restart; low-risk TTL-less cache)
+_create_contact_results = {}  # phone_normalized -> (result dict, timestamp float)
 _create_contact_lock_meta = threading.Lock()  # protects the dicts above
+CREATE_CONTACT_CACHE_TTL = 3600  # 1 hour — clear cached results after this many seconds
 
 
 def v2_headers():
@@ -90,6 +91,9 @@ def ghl_v2_get(path, params=None, contacts_version=False):
     url = f"{GHL_V2_BASE}{path}"
     headers = v2_headers_contacts() if contacts_version else v2_headers()
     resp = http_requests.get(url, headers=headers, params=params, timeout=12)
+    if resp.status_code not in (200, 201):
+        print(f"[GHL ERROR] GET {path} → HTTP {resp.status_code}: {resp.text[:200]}")
+        return {}
     return resp.json()
 
 
@@ -97,12 +101,18 @@ def ghl_v2_post(path, data, contacts_version=False):
     url = f"{GHL_V2_BASE}{path}"
     headers = v2_headers_contacts() if contacts_version else v2_headers()
     resp = http_requests.post(url, headers=headers, json=data, timeout=12)
+    if resp.status_code not in (200, 201):
+        print(f"[GHL ERROR] POST {path} → HTTP {resp.status_code}: {resp.text[:200]}")
+        return {}
     return resp.json()
 
 
 def ghl_v2_put(path, data):
     url = f"{GHL_V2_BASE}{path}"
     resp = http_requests.put(url, headers=v2_headers(), json=data, timeout=12)
+    if resp.status_code not in (200, 201):
+        print(f"[GHL ERROR] PUT {path} → HTTP {resp.status_code}: {resp.text[:200]}")
+        return {}
     return resp.json()
 
 
@@ -178,7 +188,8 @@ def handle_check_availability(args):
     FIX D: Returns helpful message when no slots found, suggesting to try different dates.
     """
     now = datetime.now(TZ)
-    start_ms = int(now.timestamp() * 1000)
+    # RISK FIX: Add 2-hour buffer so Elena never offers a slot that's about to start
+    start_ms = int((now + timedelta(hours=2)).timestamp() * 1000)
     end_ms = int((now + timedelta(days=14)).timestamp() * 1000)
 
     result = ghl_v2_get(
@@ -364,9 +375,14 @@ def handle_create_contact(args):
 
     with phone_lock:
         # If a parallel call already completed for this phone, return cached result
+        # RISK FIX: Check TTL — discard cache entries older than 1 hour to prevent memory growth
+        import time as _time
         if phone_normalized in _create_contact_results:
-            cached = _create_contact_results[phone_normalized]
-            return {**cached, "message": cached.get("message", "") + " (cached)"}
+            cached_result, cached_ts = _create_contact_results[phone_normalized]
+            if _time.time() - cached_ts < CREATE_CONTACT_CACHE_TTL:
+                return {**cached_result, "message": cached_result.get("message", "") + " (cached)"}
+            else:
+                del _create_contact_results[phone_normalized]
 
         # Check if contact already exists to avoid duplicates
         existing = handle_get_contact({"phone": phone_normalized, "callerPhone": caller_phone})
@@ -376,7 +392,8 @@ def handle_create_contact(args):
                 "contactId": existing["contactId"],
                 "message": f"Contacto ya existe: {existing.get('firstName','')} {existing.get('lastName','')}. Usando contacto existente."
             }
-            _create_contact_results[phone_normalized] = result
+            import time as _time
+            _create_contact_results[phone_normalized] = (result, _time.time())
             return result
 
         data = {
@@ -398,7 +415,8 @@ def handle_create_contact(args):
                 "contactId": contact.get("id"),
                 "message": f"Contacto creado: {contact.get('firstName', '')} {contact.get('lastName', '')}"
             }
-            _create_contact_results[phone_normalized] = result
+            import time as _time
+            _create_contact_results[phone_normalized] = (result, _time.time())
             return result
         return {"success": False, "message": f"No se pudo crear el contacto: {str(api_result)[:200]}"}
 
@@ -903,8 +921,8 @@ def _process_end_of_call(message):
                 )
                 _add_note_to_contact(contact_id, note)
 
-    except Exception:
-        pass  # Never fail the webhook response because of post-call processing
+    except Exception as e:
+        print(f"[ERROR] _process_end_of_call failed: {e}")  # Never fail webhook but always log
 
 
 # ─── Tool Registry ────────────────────────────────────────────────────────────
