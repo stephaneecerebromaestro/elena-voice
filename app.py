@@ -59,7 +59,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.15"
+SERVER_VERSION = "v17.16"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -797,7 +797,9 @@ def _process_end_of_call(message):
                 break
 
         # ── Step 2: Determine outcome label ──────────────────────────────────
-        # Detect if the user actually spoke during the call (vs pure no-answer)
+        # Detect if the user actually spoke during the call (vs pure no-answer).
+        # IMPORTANT: Vapi transcribes voicemail audio as role=user (e.g. "Tu mensaje después del toll...").
+        # So user_spoke=True does NOT reliably mean a real human spoke. We use it only as a secondary signal.
         user_spoke = any(
             m.get("role") == "user" or m.get("role") == "human"
             for m in messages_list
@@ -807,6 +809,20 @@ def _process_end_of_call(message):
         # AND user actually spoke, the duration is unreliable — do NOT treat as short call.
         duration_reliable = call_duration_secs > 0
         short_call = duration_reliable and call_duration_secs < 20
+
+        # Voicemail / no-answer detection: Elena ended the call AND duration < 45s.
+        # We use 45s because voicemail greetings + Elena's goodbye can last up to ~40s.
+        # We do NOT rely on user_spoke here because Vapi transcribes voicemail audio as role=user.
+        voicemail_by_elena = (
+            ended_reason in (
+                "assistant-ended-call",
+                "assistant-ended-call-after-message-spoken",
+                "assistant-said-end-call-phrase"
+            )
+            and duration_reliable
+            and call_duration_secs < 45
+        )
+
         if agendo:
             # Booking confirmed — highest priority, overrides everything
             outcome = "agendo"
@@ -820,22 +836,29 @@ def _process_end_of_call(message):
         elif ended_reason in (
             "silence-timed-out", "voicemail", "no-answer",
             "customer-did-not-answer", "customer-busy"
-        ) and not user_spoke:
-            # Pure no-answer: voicemail, no-answer, busy, or silence with no user speech
+        ):
+            # Pure no-answer: voicemail, no-answer, busy, or silence
+            outcome = "no_contesto"
+            outcome_label = "No Contestó"
+            stage = "Llamada 1"
+        elif voicemail_by_elena:
+            # Elena ended the call within 45s — almost certainly a voicemail/answering machine
+            # even if Vapi transcribed the voicemail audio as a user message
             outcome = "no_contesto"
             outcome_label = "No Contestó"
             stage = "Llamada 1"
         elif ended_reason in (
-            "assistant-ended-call", "assistant-ended-call-after-message-spoken",
+            "assistant-ended-call",
+            "assistant-ended-call-after-message-spoken",
             "assistant-said-end-call-phrase"
         ) and not user_spoke:
-            # Elena ended the call (e.g. detected voicemail/answering machine) and nobody spoke
+            # Elena ended the call (longer call) and nobody spoke — treat as no answer
             outcome = "no_contesto"
             outcome_label = "No Contestó"
             stage = "Llamada 1"
         else:
             # All other cases: user spoke but didn't book, call dropped mid-conversation,
-            # client hung up, Elena hung up, or any unrecognized endedReason
+            # client hung up, Elena hung up after real conversation, or unrecognized endedReason
             outcome = "no_agendo"
             outcome_label = "No Agendó"
             stage = "Poco Interes"
