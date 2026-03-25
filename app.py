@@ -792,8 +792,19 @@ def _process_end_of_call(message):
             outcome = "no_contesto"
             outcome_label = "No Contestó"
             stage = "Llamada 1"
-        elif ended_reason in ("silence-timed-out", "voicemail", "no-answer") and not user_spoke:
-            # Pure no-answer: voicemail, no-answer, or silence with no user speech at all
+        elif ended_reason in (
+            "silence-timed-out", "voicemail", "no-answer",
+            "customer-did-not-answer", "customer-busy"
+        ) and not user_spoke:
+            # Pure no-answer: voicemail, no-answer, busy, or silence with no user speech
+            outcome = "no_contesto"
+            outcome_label = "No Contestó"
+            stage = "Llamada 1"
+        elif ended_reason in (
+            "assistant-ended-call", "assistant-ended-call-after-message-spoken",
+            "assistant-said-end-call-phrase"
+        ) and not user_spoke:
+            # Elena ended the call (e.g. detected voicemail/answering machine) and nobody spoke
             outcome = "no_contesto"
             outcome_label = "No Contestó"
             stage = "Llamada 1"
