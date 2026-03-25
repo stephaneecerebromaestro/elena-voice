@@ -772,8 +772,11 @@ def _process_end_of_call(message):
             m.get("role") == "user" or m.get("role") == "human"
             for m in messages_list
         )
-        # Calls under 20 seconds are treated as no_contesto regardless of who spoke
-        short_call = call_duration_secs < 20
+        # Calls under 20 seconds are treated as no_contesto regardless of who spoke.
+        # Exception: if duration is 0 (startedAt/endedAt missing — common in inbound calls)
+        # AND user actually spoke, the duration is unreliable — do NOT treat as short call.
+        duration_reliable = call_duration_secs > 0
+        short_call = duration_reliable and call_duration_secs < 20
         if agendo:
             # Booking confirmed — highest priority, overrides everything
             outcome = "agendo"
