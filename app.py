@@ -59,12 +59,12 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.8"
+SERVER_VERSION = "v17.12"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
 _create_contact_locks = {}  # phone_normalized -> threading.Lock()
-_create_contact_results = {}  # phone_normalized -> result dict
+_create_contact_results = {}  # phone_normalized -> result dict (cleared on server restart; low-risk TTL-less cache)
 _create_contact_lock_meta = threading.Lock()  # protects the dicts above
 
 
@@ -678,12 +678,17 @@ def _process_end_of_call(message):
     appropriate tag to the GHL contact so the 'Vapi - Procesador' workflow
     can handle Google Sheets writes and pipeline stage updates.
     
-    Tags applied (3 distinct outcomes):
-    - agendo_consulta_botox  → create_booking was successful (100% reliable)
-    - no_contesto_botox      → no answer / voicemail / silence-timed-out
-    - no_agendo_botox        → answered but did not book (rejected / hung up)
-    
-    Also stores call outcome as custom fields on the GHL contact.
+    Outcome logic (written to elena_last_outcome custom field):
+    - agendo      → create_booking was called successfully (100% reliable)
+    - no_contesto → call < 20s, voicemail, no-answer, or silence with no user speech
+    - no_agendo   → user spoke but did not book (hung up, dropped, rejected)
+
+    Workflow trigger: adds generic tag 'elena_resultado_botox' AFTER writing all
+    custom fields. The GHL workflow reads elena_last_outcome (not the tag) to
+    decide which branch to take. The workflow removes the tag at the end of each
+    branch so it can re-trigger on the next call.
+
+    Also stores call metadata as custom fields and full transcript as a GHL note.
     """
     try:
         call = message.get("call", {})
@@ -836,10 +841,8 @@ def _process_end_of_call(message):
             # Save full transcript as a note on the GHL contact
             # This allows team members to read the full conversation from GHL
             if transcript:
-                from datetime import datetime as _dt
-                import pytz as _pytz
-                _tz = _pytz.timezone("America/New_York")
-                _now = _dt.now(_tz).strftime("%Y-%m-%d %H:%M EDT")
+                _tz = pytz.timezone("America/New_York")
+                _now = datetime.now(_tz).strftime("%Y-%m-%d %H:%M EDT")
                 note = (
                     f"--- LLAMADA DE ELENA AI ({_now}) ---\n"
                     f"Resultado: {outcome_label}\n"
