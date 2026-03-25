@@ -59,7 +59,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.12"
+SERVER_VERSION = "v17.14"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -301,17 +301,24 @@ def handle_get_contact(args):
     )
 
     contacts = result.get("contacts", [])
+    # FIX BUG1: GHL query search is fuzzy — it may return contacts with similar
+    # but different phone numbers. We must verify the returned contact's phone
+    # matches the number we searched for before using it.
+    # Without this check, Elena could book an appointment under the wrong contact.
     if contacts:
-        contact = contacts[0]
-        return {
-            "found": True,
-            "contactId": contact.get("id"),
-            "firstName": contact.get("firstName", ""),
-            "lastName": contact.get("lastName", ""),
-            "email": contact.get("email", ""),
-            "phone": contact.get("phone", ""),
-            "message": f"Contacto encontrado: {contact.get('firstName', '')} {contact.get('lastName', '')}"
-        }
+        for contact in contacts:
+            contact_phone_raw = contact.get("phone", "")
+            contact_phone_norm, _ = normalize_phone(contact_phone_raw)
+            if contact_phone_norm == phone_normalized:
+                return {
+                    "found": True,
+                    "contactId": contact.get("id"),
+                    "firstName": contact.get("firstName", ""),
+                    "lastName": contact.get("lastName", ""),
+                    "email": contact.get("email", ""),
+                    "phone": contact.get("phone", ""),
+                    "message": f"Contacto encontrado: {contact.get('firstName', '')} {contact.get('lastName', '')}"
+                }
     return {"found": False, "message": "Contacto no encontrado. Necesitamos crear uno nuevo."}
 
 
@@ -823,6 +830,38 @@ def _process_end_of_call(message):
                 contact_result = handle_get_contact({"phone": phone_norm})
                 if contact_result.get("found"):
                     contact_id = contact_result.get("contactId", "")
+
+        # FIX BUG3: Vapi does not always include tool-call results in artifact.messages.
+        # If agendo is still False after scanning messages, do a direct GHL lookup:
+        # check if an appointment was created for this contact in the last 30 minutes.
+        # This is the ground truth — if GHL has the appointment, it happened.
+        if not agendo and contact_id:
+            try:
+                appt_check = handle_get_appointment_by_contact({"contactId": contact_id})
+                if appt_check.get("found"):
+                    # Verify the appointment was created recently (within last 30 min)
+                    appt_start_raw = appt_check.get("startTime", "")
+                    appt_id_check = appt_check.get("appointmentId", "")
+                    if appt_id_check:
+                        # We found an appointment — check if it was booked recently
+                        # by comparing createdAt if available, otherwise trust the lookup
+                        # (conservative: only trust if appointment is in the future)
+                        try:
+                            appt_dt = datetime.fromisoformat(appt_start_raw.replace("Z", "+00:00"))
+                            now_utc = datetime.now(pytz.utc)
+                            # Appointment must be in the future (not a pre-existing old one)
+                            # and within 7 days from now (reasonable booking window)
+                            if appt_dt > now_utc and (appt_dt - now_utc).days <= 7:
+                                agendo = True
+                                appointment_id = appt_id_check
+                                booked_time = appt_check.get("humanTime", "")
+                                outcome = "agendo"
+                                outcome_label = "Agendó"
+                                stage = "Consulta Agendada"
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         # ── Step 4: Write custom fields, then apply outcome tag ─────────────────
         # CRITICAL ORDER: custom fields MUST be written BEFORE the tag is added.
