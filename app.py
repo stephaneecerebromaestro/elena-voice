@@ -1054,17 +1054,36 @@ def _process_end_of_call(message):
                 "llamarme después", "llamarme más tarde", "llamarme luego",
                 "me llamas después", "me llamas más tarde", "me llamas luego",
                 "me llamas mañana", "me puedes llamar", "puedes llamarme",
+                "me puedes marcar", "puedes marcarme", "me marcas después",
+                "me marcas más tarde", "me marcas luego", "me marcas mañana",
                 # Availability expressions
                 "en otro momento", "ahora no puedo", "ahora mismo no",
                 "no es buen momento", "no tengo tiempo ahora",
-                "estoy ocupada", "estoy ocupado", "ahora estoy ocupada", "ahora estoy ocupado",
-                # Call-back expressions
-                "te llamo yo", "luego te llamo", "yo te llamo",
+                "estoy ocupada", "estoy ocupado",
+                "ahora estoy ocupada", "ahora estoy ocupado",
+                "ahorita no puedo", "ahorita no", "ahorita estoy",
+                "ocupadita", "ocupadito",
+                "estoy en algo", "estoy en una reunión", "estoy en el trabajo",
+                "estoy manejando", "estoy conduciendo", "estoy en clase",
+                "no puedo hablar ahora", "no puedo hablar en este momento",
+                "este no es buen momento", "no es un buen momento",
+                # Indirect / soft refusals
+                "después te llamo", "te marco después", "yo te llamo",
+                "luego te llamo", "te llamo yo", "te llamo después",
+                "te llamo más tarde", "te llamo mañana",
+                "déjame llamarte", "déjame marcarte",
+                # Future time references
                 "la semana que viene", "la próxima semana", "llámame la próxima",
-                "en unos días", "más adelante",
+                "en unos días", "más adelante", "en otro rato",
+                "pasado mañana", "esta tarde", "esta noche",
                 # Time-based (client accepted callback offer)
                 "en 2 horas", "en dos horas", "en 4 horas", "en cuatro horas",
                 "en 12 horas", "mañana me llamas", "mañana en la mañana", "mañana en la tarde",
+                # Spanglish / Miami Spanish
+                "call me later", "call me back", "call me tomorrow",
+                "llámame back", "llama me back", "call me after",
+                "i\'m busy", "i am busy", "i can\'t talk", "can\'t talk right now",
+                "text me", "mándame un text",
             ]
             transcript_lower = transcript.lower() if transcript else ""
             if any(kw in transcript_lower for kw in llamar_luego_keywords):
