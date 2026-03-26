@@ -5,7 +5,7 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
-VERSION: v17 — All fixes applied:
+VERSION: v17.19 — All fixes applied:
   FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
   FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
   FIX C: Duplicate appointment detection before create_booking
@@ -15,10 +15,12 @@ VERSION: v17 — All fixes applied:
   FIX G: update-date endpoint retries on failure and updates health version string
   FIX H: Caller phone is injected into every tool call via the webhook handler
   FIX I: end-of-call-report detects booking success across all Vapi message formats
-  FIX J: Post-call processing uses GHL tags (3 distinct outcomes):
-          agendo_consulta_botox = booking confirmed
-          no_contesto_botox     = no answer / voicemail / silence
-          no_agendo_botox       = answered but did not book
+  FIX J: Post-call processing uses GHL tags (5 distinct outcomes):
+          agendo        = booking confirmed
+          no_contesto   = no answer / voicemail / silence
+          no_agendo     = answered but did not book
+          llamar_luego  = client explicitly asked to be called back later
+          error_tecnico = technical failure (Elena went silent, tool call never fired)
 
 Handles tool calls from Vapi during live phone conversations:
 - check_availability: Check calendar availability (next 14 days)
@@ -59,7 +61,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.18"
+SERVER_VERSION = "v17.19"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -860,12 +862,29 @@ def _process_end_of_call(message):
             outcome_label = "No Contestó"
             stage = "Llamada 1"
         elif ended_reason == "silence-timed-out" and user_spoke:
-            # FIX2: silence-timed-out AFTER user spoke = real conversation that dropped mid-call
-            # (e.g. client said "llámenme en una hora" and Elena went silent)
-            # This is no_agendo — the client engaged but no appointment was made
-            outcome = "no_agendo"
-            outcome_label = "No Agendó"
-            stage = "Poco Interes"
+            # silence-timed-out AFTER user spoke — could be:
+            # A) error_tecnico: Elena said "verificando" but tool call never fired (server timeout)
+            # B) llamar_luego: client asked to call back and Elena went silent
+            # C) no_agendo: normal conversation that dropped
+            # Detect error_tecnico: Elena said "verificando/momentito" in last bot message
+            # AND no tool call was ever executed in this call
+            last_bot_msg = ""
+            has_any_tool_call = False
+            for _m in messages_list:
+                if _m.get("role") in ("bot", "assistant"):
+                    last_bot_msg = _m.get("message", _m.get("content", "")) or ""
+                if _m.get("role") in ("tool_calls", "tool_call") or _m.get("type") in ("tool-call", "tool-call-result"):
+                    has_any_tool_call = True
+            verificando_phrases = ["verificando", "momentito", "un momento", "ya casi", "déjame ver", "déjame verificar", "estoy revisando", "solo un segundo"]
+            elena_was_verifying = any(ph in last_bot_msg.lower() for ph in verificando_phrases)
+            if elena_was_verifying and not has_any_tool_call:
+                outcome = "error_tecnico"
+                outcome_label = "Error Técnico"
+                stage = "Error Técnico"
+            else:
+                outcome = "no_agendo"
+                outcome_label = "No Agendó"
+                stage = "Poco Interes"
         elif voicemail_by_elena:
             # Elena ended the call within 45s — almost certainly a voicemail/answering machine
             # even if Vapi transcribed the voicemail audio as a user message
@@ -889,9 +908,24 @@ def _process_end_of_call(message):
         else:
             # All other cases: user spoke but didn't book, call dropped mid-conversation,
             # client hung up, Elena hung up after real conversation, or unrecognized endedReason
-            outcome = "no_agendo"
-            outcome_label = "No Agendó"
-            stage = "Poco Interes"
+            # Check for llamar_luego: client explicitly asked to be called back later
+            llamar_luego_keywords = [
+                "llámame luego", "llama luego", "llámame después", "llama después",
+                "llámame más tarde", "llama más tarde", "en otro momento",
+                "ahora no puedo", "ahora mismo no", "no es buen momento",
+                "estoy ocupada", "estoy ocupado", "te llamo yo",
+                "luego te llamo", "llámame mañana", "la semana que viene",
+                "la próxima semana", "llámame la próxima"
+            ]
+            transcript_lower = transcript.lower() if transcript else ""
+            if any(kw in transcript_lower for kw in llamar_luego_keywords):
+                outcome = "llamar_luego"
+                outcome_label = "Llamar Luego"
+                stage = "Llamar Luego"
+            else:
+                outcome = "no_agendo"
+                outcome_label = "No Agendó"
+                stage = "Poco Interes"
 
         # ── Step 3: Find the GHL contact by phone ─────────────────────────────
         contact_id = ""
