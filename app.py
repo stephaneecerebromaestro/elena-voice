@@ -5,7 +5,7 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
-VERSION: v17.21 — All fixes applied:
+VERSION: v17.23 — All fixes applied:
   FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
   FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
   FIX C: Duplicate appointment detection before create_booking
@@ -22,7 +22,10 @@ VERSION: v17.21 — All fixes applied:
           llamar_luego  = client asked to be called back (schedule_callback tool used)
           error_tecnico = technical failure (5 scenarios: silence/no-tool, wrong contact,
                           no availability, create failure, mid-booking drop)
-  FIX K: schedule_callback tool — Elena picks 2h or 4h based on client's state          writes elena_callback_time (ISO string) and elena_callback_hours ('2' or '4') to GHL contact Call counters — elena_total_calls (all calls) and elena_conversations
+  FIX K: schedule_callback tool — Elena picks 2h/4h/12h/120h based on client's state
+          writes elena_callback_time (ISO string) and elena_callback_hours to GHL contact
+  FIX M: get_current_time tool — returns real Miami time so Elena can calculate callback windows
+          Call counters — elena_total_calls (all calls) and elena_conversations
           (calls where client spoke) are incremented on every end-of-call
 
 Handles tool calls from Vapi during live phone conversations:
@@ -64,7 +67,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.22"
+SERVER_VERSION = "v17.23"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -656,34 +659,59 @@ def handle_get_appointment_by_contact(args):
         }
 
 
+def handle_get_current_time(args):
+    """FIX M: Return the current Miami date and time so Elena can calculate callback windows.
+
+    Elena MUST call this tool as soon as the client says they can't talk right now,
+    BEFORE asking about callback preference. This gives Elena the real local time
+    so she can correctly map expressions like 'after 5:30pm' or 'tomorrow morning'
+    to the right hours option (2 / 4 / 12 / 120).
+
+    No parameters needed.
+    """
+    now = datetime.now(TZ)
+    return {
+        "time": now.strftime("%I:%M %p").lstrip("0"),   # e.g. "4:34 PM"
+        "date": (
+            f"{DAYS_ES[now.weekday()]} {now.day} de "
+            f"{MONTHS_ES[now.month-1]} de {now.year}"
+        ),
+        "dayOfWeek": DAYS_ES[now.weekday()],              # e.g. "jueves"
+        "hour24": now.hour,                               # 0–23 integer, useful for math
+        "minute": now.minute,                             # 0–59 integer
+        "isoNow": now.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+
+
 def handle_schedule_callback(args):
     """
-    FIX K: Schedule a callback for the client in 2 or 4 hours from now (Miami time).
+    FIX K+M: Schedule a callback in 2 / 4 / 12 / 120 hours from now (Miami time).
 
-    Elena calls this when the client says they can't talk right now but wants
-    to be called back. Elena picks the option closest to what the client said:
-    - hours=2 if the client said something <= 3 hours from now
-    - hours=4 if the client said something > 3 hours from now
+    Elena calls this when the client says they can't talk right now.
+    Accepted values for `hours`:
+      2   → ~2 hours   ("en 2 horas", "ahorita", "más tarde" vague)
+      4   → ~4 hours   ("en 4 horas", "esta tarde", same-day specific time <6h away)
+      12  → ~12 hours  ("mañana", "mañana en la mañana/tarde", "pasado mañana")
+      120 → 5 days     ("la próxima semana", "en unos días", "más adelante")
 
     The server:
-    1. Calculates the exact callback timestamp (now + hours, Miami time)
-    2. Writes elena_callback_time (ISO string) to the GHL contact
-    3. Writes elena_last_outcome = 'llamar_luego'
-    4. Adds tag 'elena_resultado_botox' to trigger the GHL workflow
-
-    The GHL workflow reads elena_callback_time and programs the outbound call.
+    1. Validates and normalises hours to one of the four accepted values
+    2. Calculates the exact callback timestamp (now + hours, Miami time)
+    3. Writes elena_callback_time (ISO) and elena_callback_hours ('2','4','12','120') to GHL
+    4. Writes elena_last_outcome = 'llamar_luego' and adds the GHL trigger tag
     """
     hours_raw = args.get("hours", 2)
     caller_phone = args.get("callerPhone", "")
 
-    # Validate hours — only 2 or 4 are accepted
+    # Validate — only 2, 4, 12, 120 are accepted; snap to nearest if unexpected value arrives
+    VALID_HOURS = (2, 4, 12, 120)
     try:
         hours = int(hours_raw)
     except (ValueError, TypeError):
         hours = 2
-    if hours not in (2, 4):
-        # Snap to nearest valid option
-        hours = 2 if hours <= 3 else 4
+    if hours not in VALID_HOURS:
+        distances = {v: abs(v - hours) for v in VALID_HOURS}
+        hours = min(distances, key=distances.get)
 
     # Calculate callback time
     now_miami = datetime.now(TZ)
@@ -1121,6 +1149,7 @@ TOOL_HANDLERS = {
     "cancel_appointment": handle_cancel_appointment,
     "get_appointment_by_contact": handle_get_appointment_by_contact,
     "schedule_callback": handle_schedule_callback,
+    "get_current_time": handle_get_current_time,  # FIX M: real Miami time for callback math
 }
 
 

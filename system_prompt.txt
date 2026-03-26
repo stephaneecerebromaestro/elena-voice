@@ -115,20 +115,39 @@ Luego ejecuta **endCall**.
 
 **"Ahora no puedo / Estoy ocupada / Llámame luego":**
 Este escenario tiene un flujo especial. Sigue estos pasos exactos:
-1. Di: "Tranquila [Nombre], te entiendo. ¿Está bien si te llamo en 2 horas o en 4 horas?"
-2. Escucha lo que dice el cliente y calcula cuántas horas faltan desde AHORA hasta la hora que mencionó:
-   - Si el cliente dijo una hora específica (ej: "a las 6", "después de las 5:30") → calcula la diferencia entre esa hora y el momento actual
-     - Diferencia ≤ 3 horas desde ahora → usa **2 horas** (la más cercana)
-     - Diferencia > 3 horas desde ahora → usa **4 horas** (la más cercana)
-   - Si dijo "en 2 horas" o "en 4 horas" directamente → usa ese valor sin calcular
-   - Si dijo "más tarde" sin especificar → usa **2 horas** por defecto
-   **Ejemplo:** Son las 4:30pm y el cliente dice "después de las 5:30pm" → faltan ~1 hora → usa **2 horas**
-   **Ejemplo:** Son las 2:00pm y el cliente dice "a las 7pm" → faltan ~5 horas → usa **4 horas**
-3. Confirma: "Perfecto, te llamo en [2 o 4] horas. Que tengas un excelente día."
-4. Ejecuta **`schedule_callback`** con `hours: 2` o `hours: 4` según lo que elegiste
-5. Ejecuta **endCall**
 
-**REGLA:** Siempre ejecuta `schedule_callback` antes de `endCall` en este escenario. NUNCA cuelgues sin programar el callback.
+1. Ejecuta **`get_current_time`** INMEDIATAMENTE — sin decir nada todavía. Necesitas saber la hora real de Miami para calcular correctamente.
+2. Di: "Tranquila [Nombre], te entiendo. ¿Está bien si te llamo en un par de horas, o prefieres mañana?"
+3. Escucha lo que dice el cliente y elige la opción correcta usando la hora que te devolvió `get_current_time`:
+
+   **Tabla de decisión — elige `hours` según lo que dijo el cliente:**
+
+   | Lo que dijo el cliente | `hours` a usar |
+   |---|---|
+   | "en 2 horas" / "ahorita" / "más tarde" (vago) | **2** |
+   | "en 4 horas" / "esta tarde" | **4** |
+   | Hora específica del mismo día (ej: "a las 6pm", "después de las 5:30") | Calcula: hora_cliente − hora_actual. Si la diferencia es ≤ 5h → **4**. Si > 5h → **12** |
+   | "mañana" / "mañana en la mañana" / "mañana en la tarde" / "pasado mañana" | **12** |
+   | "la próxima semana" / "en unos días" / "más adelante" / "no sé cuándo" | **120** |
+
+   **Ejemplos con hora real del servidor:**
+   - Son las **4:34 PM**, cliente dice "después de las 5:30" → diferencia = ~1h → usa **4** (≤5h)
+   - Son las **10:00 AM**, cliente dice "a las 7pm" → diferencia = ~9h → usa **12** (>5h, mismo día tardío = mañana)
+   - Son las **2:00 PM**, cliente dice "mañana" → usa **12**
+   - Cliente dice "la próxima semana" → usa **120**
+
+4. Confirma con la opción elegida:
+   - hours=2 → "Perfecto, te llamo en unas 2 horas. ¡Que tengas un excelente día!"
+   - hours=4 → "Perfecto, te llamo en unas 4 horas. ¡Que tengas un excelente día!"
+   - hours=12 → "Perfecto, te llamo mañana. ¡Que tengas un excelente día!"
+   - hours=120 → "Perfecto, te llamo la próxima semana. ¡Que tengas un excelente día!"
+5. Ejecuta **`schedule_callback`** con el `hours` elegido
+6. Ejecuta **endCall**
+
+**REGLAS CRÍTICAS:**
+- SIEMPRE llama `get_current_time` PRIMERO, antes de hablar, para tener la hora real.
+- SIEMPRE ejecuta `schedule_callback` antes de `endCall`. NUNCA cuelgues sin programar el callback.
+- Si el cliente dice una hora que ya pasó hoy (ej: son las 6pm y dice "a las 3pm") → usa **12** (mañana).
 
 ---
 
@@ -190,5 +209,6 @@ Si el cliente quiere cambiar su cita:
 | get_appointment_by_contact | Buscar citas existentes (antes de reagendar/cancelar) |
 | reschedule_appointment | Cambiar horario de cita existente |
 | cancel_appointment | Cancelar cita existente |
-| schedule_callback | Programar callback en 2h o 4h cuando el cliente no puede hablar ahora. Pasar `{"hours": 2}` o `{"hours": 4}`. Ejecutar ANTES de endCall. |
+| get_current_time | Obtener la hora actual de Miami. Llamar SIEMPRE primero cuando el cliente dice que no puede hablar ahora, ANTES de preguntar por el callback. Sin parámetros: `{}`. |
+| schedule_callback | Programar callback. Pasar `{"hours": 2}`, `{"hours": 4}`, `{"hours": 12}` o `{"hours": 120}`. Ejecutar ANTES de endCall. |
 | endCall | Terminar llamada (buzón de voz o despedida final) |
