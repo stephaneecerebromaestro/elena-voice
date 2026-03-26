@@ -5,7 +5,7 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
-VERSION: v17.23 — All fixes applied:
+VERSION: v17.24 — All fixes applied:
   FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
   FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
   FIX C: Duplicate appointment detection before create_booking
@@ -25,6 +25,9 @@ VERSION: v17.23 — All fixes applied:
   FIX K: schedule_callback tool — Elena picks 2h/4h/12h/120h based on client's state
           writes elena_callback_time (ISO string) and elena_callback_hours to GHL contact
   FIX M: get_current_time tool — returns real Miami time so Elena can calculate callback windows
+  FIX N: llamar_luego detection now uses schedule_callback tool result as ground truth (priority 2)
+          Keyword fallback expanded with natural speech variations (llamar más tarde, me puedes llamar, etc.)
+          Eliminates double-outcome bug where no_agendo overwrote llamar_luego
           Call counters — elena_total_calls (all calls) and elena_conversations
           (calls where client spoke) are incremented on every end-of-call
 
@@ -67,7 +70,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.23"
+SERVER_VERSION = "v17.24"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -854,38 +857,50 @@ def _process_end_of_call(message):
         else:
             call_type = "Outbound"  # default for backwards compatibility
 
-        # ── Step 1: Detect if create_booking was called successfully ──────────
-        # Vapi sends tool results in multiple formats depending on version.
-        # We check all known formats to be safe.
+        # ── Step 1: Detect tool call outcomes (create_booking + schedule_callback) ──
+        # FIX N: scan messages for BOTH create_booking and schedule_callback results.
+        # schedule_callback success is the ground truth for llamar_luego — more reliable
+        # than keyword matching, which misses natural speech variations.
+        # Priority: agendo > llamar_luego_confirmed > keyword fallback.
         agendo = False
         appointment_id = ""
         booked_time = ""
+        llamar_luego_confirmed = False  # FIX N: set True when schedule_callback succeeded
+        callback_hours_confirmed = 0    # FIX N: hours value from schedule_callback result
 
         for msg in messages_list:
             # Format 1: role=tool with JSON content (older Vapi format)
             if msg.get("role") == "tool":
                 content = msg.get("content", "")
                 if isinstance(content, list):
-                    # content can be a list of {type, text} objects
                     for item in content:
                         text = item.get("text", "") if isinstance(item, dict) else ""
                         try:
                             parsed = json.loads(text)
-                            if isinstance(parsed, dict) and parsed.get("success") and parsed.get("appointmentId"):
-                                agendo = True
-                                appointment_id = parsed.get("appointmentId", "")
-                                booked_time = parsed.get("message", "")
-                                break
+                            if isinstance(parsed, dict) and parsed.get("success"):
+                                if parsed.get("appointmentId"):
+                                    agendo = True
+                                    appointment_id = parsed.get("appointmentId", "")
+                                    booked_time = parsed.get("message", "")
+                                    break
+                                if parsed.get("hours") and parsed.get("callbackTime"):
+                                    # FIX N: schedule_callback returned success
+                                    llamar_luego_confirmed = True
+                                    callback_hours_confirmed = int(parsed.get("hours", 2))
                         except Exception:
                             pass
                 elif isinstance(content, str):
                     try:
                         parsed = json.loads(content)
-                        if isinstance(parsed, dict) and parsed.get("success") and parsed.get("appointmentId"):
-                            agendo = True
-                            appointment_id = parsed.get("appointmentId", "")
-                            booked_time = parsed.get("message", "")
-                            break
+                        if isinstance(parsed, dict) and parsed.get("success"):
+                            if parsed.get("appointmentId"):
+                                agendo = True
+                                appointment_id = parsed.get("appointmentId", "")
+                                booked_time = parsed.get("message", "")
+                                break
+                            if parsed.get("hours") and parsed.get("callbackTime"):
+                                llamar_luego_confirmed = True
+                                callback_hours_confirmed = int(parsed.get("hours", 2))
                     except Exception:
                         pass
 
@@ -894,11 +909,15 @@ def _process_end_of_call(message):
                 result_str = msg.get("result", "")
                 try:
                     parsed = json.loads(result_str) if isinstance(result_str, str) else result_str
-                    if isinstance(parsed, dict) and parsed.get("success") and parsed.get("appointmentId"):
-                        agendo = True
-                        appointment_id = parsed.get("appointmentId", "")
-                        booked_time = parsed.get("message", "")
-                        break
+                    if isinstance(parsed, dict) and parsed.get("success"):
+                        if parsed.get("appointmentId"):
+                            agendo = True
+                            appointment_id = parsed.get("appointmentId", "")
+                            booked_time = parsed.get("message", "")
+                            break
+                        if parsed.get("hours") and parsed.get("callbackTime"):
+                            llamar_luego_confirmed = True
+                            callback_hours_confirmed = int(parsed.get("hours", 2))
                 except Exception:
                     pass
 
@@ -950,6 +969,14 @@ def _process_end_of_call(message):
             outcome = "agendo"
             outcome_label = "Agendó"
             stage = "Consulta Agendada"
+        elif llamar_luego_confirmed:
+            # FIX N: schedule_callback tool executed successfully — second highest priority.
+            # This is the ground truth: Elena programmed a callback. No keyword matching needed.
+            # Overrides any ended_reason or transcript analysis.
+            outcome = "llamar_luego"
+            outcome_label = "Llamar Luego"
+            stage = "Llamar Luego"
+            print(f"[outcome] llamar_luego_confirmed via schedule_callback (hours={callback_hours_confirmed})")
         elif short_call:
             # Call too short to have had a real conversation — treat as no answer
             outcome = "no_contesto"
@@ -1016,19 +1043,35 @@ def _process_end_of_call(message):
             # All other cases: user spoke but didn't book, call dropped mid-conversation,
             # client hung up, Elena hung up after real conversation, or unrecognized endedReason
             # Check for llamar_luego: client explicitly asked to be called back later
+            # FIX N: Keyword fallback — only used when schedule_callback was NOT detected in messages.
+            # Expanded keyword list to cover natural speech variations.
             llamar_luego_keywords = [
+                # Direct requests
                 "llámame luego", "llama luego", "llámame después", "llama después",
-                "llámame más tarde", "llama más tarde", "en otro momento",
-                "ahora no puedo", "ahora mismo no", "no es buen momento",
-                "estoy ocupada", "estoy ocupado", "te llamo yo",
-                "luego te llamo", "llámame mañana", "la semana que viene",
-                "la próxima semana", "llámame la próxima"
+                "llámame más tarde", "llama más tarde", "llamar más tarde",
+                "llámame mañana", "llama mañana",
+                # Variations with 'me'
+                "llamarme después", "llamarme más tarde", "llamarme luego",
+                "me llamas después", "me llamas más tarde", "me llamas luego",
+                "me llamas mañana", "me puedes llamar", "puedes llamarme",
+                # Availability expressions
+                "en otro momento", "ahora no puedo", "ahora mismo no",
+                "no es buen momento", "no tengo tiempo ahora",
+                "estoy ocupada", "estoy ocupado", "ahora estoy ocupada", "ahora estoy ocupado",
+                # Call-back expressions
+                "te llamo yo", "luego te llamo", "yo te llamo",
+                "la semana que viene", "la próxima semana", "llámame la próxima",
+                "en unos días", "más adelante",
+                # Time-based (client accepted callback offer)
+                "en 2 horas", "en dos horas", "en 4 horas", "en cuatro horas",
+                "en 12 horas", "mañana me llamas", "mañana en la mañana", "mañana en la tarde",
             ]
             transcript_lower = transcript.lower() if transcript else ""
             if any(kw in transcript_lower for kw in llamar_luego_keywords):
                 outcome = "llamar_luego"
                 outcome_label = "Llamar Luego"
                 stage = "Llamar Luego"
+                print("[outcome] llamar_luego via keyword fallback (schedule_callback not in messages)")
             else:
                 outcome = "no_agendo"
                 outcome_label = "No Agendó"
