@@ -5,7 +5,7 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
-VERSION: v17.20 — All fixes applied:
+VERSION: v17.21 — All fixes applied:
   FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
   FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
   FIX C: Duplicate appointment detection before create_booking
@@ -24,6 +24,8 @@ VERSION: v17.20 — All fixes applied:
                           no availability, create failure, mid-booking drop)
   FIX K: schedule_callback tool — Elena picks 2h or 4h based on client's stated time,
           writes elena_callback_time to GHL contact for workflow scheduling
+  FIX L: Call counters — elena_total_calls (all calls) and elena_conversations
+          (calls where client spoke) are incremented on every end-of-call
 
 Handles tool calls from Vapi during live phone conversations:
 - check_availability: Check calendar availability (next 14 days)
@@ -64,7 +66,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.20"
+SERVER_VERSION = "v17.21"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -1062,6 +1064,26 @@ def _process_end_of_call(message):
                 _update_contact_custom_field(contact_id, "elena_call_id", call_id)
             if appointment_id:
                 _update_contact_custom_field(contact_id, "elena_appointment_id", appointment_id)
+
+            # Step 4c: Increment call counters (metrics only — not used for workflow logic)
+            # elena_total_calls: every call, regardless of outcome
+            # elena_conversations: only calls where the client actually spoke (outcome != no_contesto)
+            try:
+                contact_resp = http_requests.get(
+                    f"{GHL_V2_BASE}/contacts/{contact_id}",
+                    headers=v2_headers_contacts(),
+                    timeout=10
+                )
+                if contact_resp.status_code == 200:
+                    existing_fields = contact_resp.json().get("contact", {}).get("customFields", [])
+                    fields_map = {f.get("key", ""): f.get("value", 0) for f in existing_fields}
+                    current_total = int(fields_map.get("elena_total_calls", 0) or 0)
+                    current_convos = int(fields_map.get("elena_conversations", 0) or 0)
+                    _update_contact_custom_field(contact_id, "elena_total_calls", current_total + 1)
+                    if outcome != "no_contesto":
+                        _update_contact_custom_field(contact_id, "elena_conversations", current_convos + 1)
+            except Exception as _counter_err:
+                print(f"[WARN] Counter update failed: {_counter_err}")
 
             # Step 4b: Write elena_last_outcome custom field, then add generic trigger tag.
             # ARCHITECTURE: elena_last_outcome is the source of truth (single value, no accumulation).
