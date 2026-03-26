@@ -5,7 +5,7 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
-VERSION: v17.19 — All fixes applied:
+VERSION: v17.20 — All fixes applied:
   FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
   FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
   FIX C: Duplicate appointment detection before create_booking
@@ -19,8 +19,11 @@ VERSION: v17.19 — All fixes applied:
           agendo        = booking confirmed
           no_contesto   = no answer / voicemail / silence
           no_agendo     = answered but did not book
-          llamar_luego  = client explicitly asked to be called back later
-          error_tecnico = technical failure (Elena went silent, tool call never fired)
+          llamar_luego  = client asked to be called back (schedule_callback tool used)
+          error_tecnico = technical failure (5 scenarios: silence/no-tool, wrong contact,
+                          no availability, create failure, mid-booking drop)
+  FIX K: schedule_callback tool — Elena picks 2h or 4h based on client's stated time,
+          writes elena_callback_time to GHL contact for workflow scheduling
 
 Handles tool calls from Vapi during live phone conversations:
 - check_availability: Check calendar availability (next 14 days)
@@ -61,7 +64,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.19"
+SERVER_VERSION = "v17.20"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -653,6 +656,81 @@ def handle_get_appointment_by_contact(args):
         }
 
 
+def handle_schedule_callback(args):
+    """
+    FIX K: Schedule a callback for the client in 2 or 4 hours from now (Miami time).
+
+    Elena calls this when the client says they can't talk right now but wants
+    to be called back. Elena picks the option closest to what the client said:
+    - hours=2 if the client said something <= 3 hours from now
+    - hours=4 if the client said something > 3 hours from now
+
+    The server:
+    1. Calculates the exact callback timestamp (now + hours, Miami time)
+    2. Writes elena_callback_time (ISO string) to the GHL contact
+    3. Writes elena_last_outcome = 'llamar_luego'
+    4. Adds tag 'elena_resultado_botox' to trigger the GHL workflow
+
+    The GHL workflow reads elena_callback_time and programs the outbound call.
+    """
+    hours_raw = args.get("hours", 2)
+    caller_phone = args.get("callerPhone", "")
+
+    # Validate hours — only 2 or 4 are accepted
+    try:
+        hours = int(hours_raw)
+    except (ValueError, TypeError):
+        hours = 2
+    if hours not in (2, 4):
+        # Snap to nearest valid option
+        hours = 2 if hours <= 3 else 4
+
+    # Calculate callback time
+    now_miami = datetime.now(TZ)
+    callback_dt = now_miami + timedelta(hours=hours)
+    callback_iso = callback_dt.strftime("%Y-%m-%dT%H:%M:%S%z")  # e.g. 2026-03-26T17:30:00-0400
+    callback_human = (
+        f"{DAYS_ES[callback_dt.weekday()]} {callback_dt.day} de "
+        f"{MONTHS_ES[callback_dt.month-1]} a las "
+        f"{callback_dt.strftime('%I:%M %p').lstrip('0').lower()}"
+    )
+
+    # Find GHL contact by caller phone and write fields
+    contact_id = ""
+    if caller_phone:
+        phone_norm, phone_valid = normalize_phone(caller_phone)
+        if phone_valid:
+            contact_result = handle_get_contact({"callerPhone": caller_phone})
+            if contact_result.get("found"):
+                contact_id = contact_result.get("contactId", "")
+
+    if contact_id:
+        _update_contact_custom_field(contact_id, "elena_callback_time", callback_iso)
+        _update_contact_custom_field(contact_id, "elena_last_outcome", "llamar_luego")
+        _update_contact_custom_field(contact_id, "elena_outcome", "Llamar Luego")
+        _update_contact_custom_field(contact_id, "elena_stage", "Llamar Luego")
+        _add_tag_to_contact(contact_id, "elena_resultado_botox")
+        print(f"[schedule_callback] Contact {contact_id} scheduled for callback at {callback_iso}")
+        return {
+            "success": True,
+            "hours": hours,
+            "callbackTime": callback_iso,
+            "callbackHuman": callback_human,
+            "message": f"Perfecto. Te llamo el {callback_human} (hora de Miami)."
+        }
+    else:
+        # No contact found — still return success so Elena can confirm to client
+        # The end-of-call-report will handle the GHL update as llamar_luego
+        print(f"[schedule_callback] No contact found for {caller_phone} — callback at {callback_iso} not written to GHL")
+        return {
+            "success": True,
+            "hours": hours,
+            "callbackTime": callback_iso,
+            "callbackHuman": callback_human,
+            "message": f"Perfecto. Te llamo el {callback_human} (hora de Miami)."
+        }
+
+
 def _add_tag_to_contact(contact_id, tag):
     """Add a tag to a GHL contact via V2 API."""
     try:
@@ -1021,6 +1099,7 @@ TOOL_HANDLERS = {
     "reschedule_appointment": handle_reschedule_appointment,
     "cancel_appointment": handle_cancel_appointment,
     "get_appointment_by_contact": handle_get_appointment_by_contact,
+    "schedule_callback": handle_schedule_callback,
 }
 
 

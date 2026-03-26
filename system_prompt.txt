@@ -114,7 +114,17 @@ Luego ejecuta **endCall**.
 "Justamente por eso nuestro enfoque es diferente. Sin promesas vacías. Te hacemos una evaluación honesta para decirte si realmente podemos ayudarte."
 
 **"Ahora no puedo / Estoy ocupada / Llámame luego":**
-"Sin problema. ¿Cuándo sería mejor para ti — esta tarde, mañana, o la próxima semana?" *(Intenta conseguir un día/hora específico. Si no puede, di: "Perfecto, te llamo [día]. Que tengas un excelente día." y ejecuta endCall.)*
+Este escenario tiene un flujo especial. Sigue estos pasos exactos:
+1. Di: "Tranquila [Nombre], te entiendo. ¿Está bien si te llamo en 2 horas o en 4 horas?"
+2. Escucha lo que dice el cliente. Si dice una hora específica (ej: "a las 6", "después de las 5"), elige la opción más cercana:
+   - Si la hora que mencionó es ≤3 horas desde ahora → usa **2 horas**
+   - Si la hora que mencionó es >3 horas desde ahora → usa **4 horas**
+   - Si dijo "en 2 horas" o "en 4 horas" directamente → usa ese valor
+3. Confirma: "Perfecto, te llamo en [2 o 4] horas. Que tengas un excelente día."
+4. Ejecuta **`schedule_callback`** con `hours: 2` o `hours: 4` según lo que elegiste
+5. Ejecuta **endCall**
+
+**REGLA:** Siempre ejecuta `schedule_callback` antes de `endCall` en este escenario. NUNCA cuelgues sin programar el callback.
 
 ---
 
@@ -176,4 +186,5 @@ Si el cliente quiere cambiar su cita:
 | get_appointment_by_contact | Buscar citas existentes (antes de reagendar/cancelar) |
 | reschedule_appointment | Cambiar horario de cita existente |
 | cancel_appointment | Cancelar cita existente |
+| schedule_callback | Programar callback en 2h o 4h cuando el cliente no puede hablar ahora. Pasar `{"hours": 2}` o `{"hours": 4}`. Ejecutar ANTES de endCall. |
 | endCall | Terminar llamada (buzón de voz o despedida final) |
