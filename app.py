@@ -22,9 +22,7 @@ VERSION: v17.21 — All fixes applied:
           llamar_luego  = client asked to be called back (schedule_callback tool used)
           error_tecnico = technical failure (5 scenarios: silence/no-tool, wrong contact,
                           no availability, create failure, mid-booking drop)
-  FIX K: schedule_callback tool — Elena picks 2h or 4h based on client's stated time,
-          writes elena_callback_time to GHL contact for workflow scheduling
-  FIX L: Call counters — elena_total_calls (all calls) and elena_conversations
+  FIX K: schedule_callback tool — Elena picks 2h or 4h based on client's state          writes elena_callback_time (ISO string) and elena_callback_hours ('2' or '4') to GHL contact Call counters — elena_total_calls (all calls) and elena_conversations
           (calls where client spoke) are incremented on every end-of-call
 
 Handles tool calls from Vapi during live phone conversations:
@@ -66,7 +64,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.21"
+SERVER_VERSION = "v17.22"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -708,11 +706,12 @@ def handle_schedule_callback(args):
 
     if contact_id:
         _update_contact_custom_field(contact_id, "elena_callback_time", callback_iso)
+        _update_contact_custom_field(contact_id, "elena_callback_hours", str(hours))  # FIX L: GHL workflow reads this to decide 2h vs 4h wait
         _update_contact_custom_field(contact_id, "elena_last_outcome", "llamar_luego")
         _update_contact_custom_field(contact_id, "elena_outcome", "Llamar Luego")
         _update_contact_custom_field(contact_id, "elena_stage", "Llamar Luego")
         _add_tag_to_contact(contact_id, "elena_resultado_botox")
-        print(f"[schedule_callback] Contact {contact_id} scheduled for callback at {callback_iso}")
+        print(f"[schedule_callback] Contact {contact_id} scheduled for callback at {callback_iso} (hours={hours})")
         return {
             "success": True,
             "hours": hours,
