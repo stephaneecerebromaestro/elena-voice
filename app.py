@@ -5,7 +5,7 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
-VERSION: v17.24 — All fixes applied:
+VERSION: v17.25 — All fixes applied:
   FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
   FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
   FIX C: Duplicate appointment detection before create_booking
@@ -70,7 +70,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.24"
+SERVER_VERSION = "v17.25"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -1021,10 +1021,34 @@ def _process_end_of_call(message):
                 stage = "Poco Interes"
         elif voicemail_by_elena:
             # Elena ended the call within 45s — almost certainly a voicemail/answering machine
-            # even if Vapi transcribed the voicemail audio as a user message
-            outcome = "no_contesto"
-            outcome_label = "No Contestó"
-            stage = "Llamada 1"
+            # even if Vapi transcribed the voicemail audio as a user message.
+            # FIX O — Scenario E: BUT if user actually spoke AND Elena was verifying without
+            # executing any tool, this is a technical error, not a voicemail.
+            if user_spoke and not has_any_tool_call:
+                # Re-use verificando detection computed above (silence-timed-out block)
+                # We need to recompute it here since it may not have been computed yet.
+                _last_bot_e = ""
+                _has_tool_e = False
+                for _m in messages_list:
+                    if _m.get("role") in ("bot", "assistant"):
+                        _last_bot_e = _m.get("message", _m.get("content", "")) or ""
+                    if _m.get("role") in ("tool_calls", "tool_call") or _m.get("type") in ("tool-call", "tool-call-result"):
+                        _has_tool_e = True
+                _verificando_phrases = ["verificando", "momentito", "un momento", "ya casi", "déjame ver", "déjame verificar", "estoy revisando", "solo un segundo"]
+                _elena_verifying_e = any(ph in _last_bot_e.lower() for ph in _verificando_phrases)
+                if _elena_verifying_e and not _has_tool_e:
+                    outcome = "error_tecnico"
+                    outcome_label = "Error Técnico"
+                    stage = "Error Técnico"
+                    print("[outcome] error_tecnico — Scenario E: assistant-ended-call, user spoke, Elena verifying, no tool calls")
+                else:
+                    outcome = "no_contesto"
+                    outcome_label = "No Contestó"
+                    stage = "Llamada 1"
+            else:
+                outcome = "no_contesto"
+                outcome_label = "No Contestó"
+                stage = "Llamada 1"
         elif voicemail_by_customer:
             # Voicemail system picked up and disconnected — customer-ended-call, no user speech, < 60s
             outcome = "no_contesto"
@@ -1041,60 +1065,84 @@ def _process_end_of_call(message):
             stage = "Llamada 1"
         else:
             # All other cases: user spoke but didn't book, call dropped mid-conversation,
-            # client hung up, Elena hung up after real conversation, or unrecognized endedReason
-            # Check for llamar_luego: client explicitly asked to be called back later
-            # FIX N: Keyword fallback — only used when schedule_callback was NOT detected in messages.
-            # Expanded keyword list to cover natural speech variations.
-            llamar_luego_keywords = [
-                # Direct requests
-                "llámame luego", "llama luego", "llámame después", "llama después",
-                "llámame más tarde", "llama más tarde", "llamar más tarde",
-                "llámame mañana", "llama mañana",
-                # Variations with 'me'
-                "llamarme después", "llamarme más tarde", "llamarme luego",
-                "me llamas después", "me llamas más tarde", "me llamas luego",
-                "me llamas mañana", "me puedes llamar", "puedes llamarme",
-                "me puedes marcar", "puedes marcarme", "me marcas después",
-                "me marcas más tarde", "me marcas luego", "me marcas mañana",
-                # Availability expressions
-                "en otro momento", "ahora no puedo", "ahora mismo no",
-                "no es buen momento", "no tengo tiempo ahora",
-                "estoy ocupada", "estoy ocupado",
-                "ahora estoy ocupada", "ahora estoy ocupado",
-                "ahorita no puedo", "ahorita no", "ahorita estoy",
-                "ocupadita", "ocupadito",
-                "estoy en algo", "estoy en una reunión", "estoy en el trabajo",
-                "estoy manejando", "estoy conduciendo", "estoy en clase",
-                "no puedo hablar ahora", "no puedo hablar en este momento",
-                "este no es buen momento", "no es un buen momento",
-                # Indirect / soft refusals
-                "después te llamo", "te marco después", "yo te llamo",
-                "luego te llamo", "te llamo yo", "te llamo después",
-                "te llamo más tarde", "te llamo mañana",
-                "déjame llamarte", "déjame marcarte",
-                # Future time references
-                "la semana que viene", "la próxima semana", "llámame la próxima",
-                "en unos días", "más adelante", "en otro rato",
-                "pasado mañana", "esta tarde", "esta noche",
-                # Time-based (client accepted callback offer)
-                "en 2 horas", "en dos horas", "en 4 horas", "en cuatro horas",
-                "en 12 horas", "mañana me llamas", "mañana en la mañana", "mañana en la tarde",
-                # Spanglish / Miami Spanish
-                "call me later", "call me back", "call me tomorrow",
-                "llámame back", "llama me back", "call me after",
-                "i\'m busy", "i am busy", "i can\'t talk", "can\'t talk right now",
-                "text me", "mándame un text",
-            ]
-            transcript_lower = transcript.lower() if transcript else ""
-            if any(kw in transcript_lower for kw in llamar_luego_keywords):
-                outcome = "llamar_luego"
-                outcome_label = "Llamar Luego"
-                stage = "Llamar Luego"
-                print("[outcome] llamar_luego via keyword fallback (schedule_callback not in messages)")
+            # client hung up, Elena hung up after real conversation, or unrecognized endedReason.
+            #
+            # FIX O — Scenario D: customer-ended-call + user spoke + Elena was verifying + no tool calls
+            # = client hung up while Elena was frozen waiting for a tool response.
+            # This is a technical error, not a normal no_agendo.
+            _last_bot_d = ""
+            _has_tool_d = False
+            for _m in messages_list:
+                if _m.get("role") in ("bot", "assistant"):
+                    _last_bot_d = _m.get("message", _m.get("content", "")) or ""
+                if _m.get("role") in ("tool_calls", "tool_call") or _m.get("type") in ("tool-call", "tool-call-result"):
+                    _has_tool_d = True
+            _verificando_phrases_d = ["verificando", "momentito", "un momento", "ya casi", "déjame ver", "déjame verificar", "estoy revisando", "solo un segundo"]
+            _elena_verifying_d = any(ph in _last_bot_d.lower() for ph in _verificando_phrases_d)
+            if (
+                ended_reason == "customer-ended-call"
+                and user_spoke
+                and _elena_verifying_d
+                and not _has_tool_d
+            ):
+                outcome = "error_tecnico"
+                outcome_label = "Error Técnico"
+                stage = "Error Técnico"
+                print("[outcome] error_tecnico — Scenario D: customer-ended-call, user spoke, Elena verifying, no tool calls")
             else:
-                outcome = "no_agendo"
-                outcome_label = "No Agendó"
-                stage = "Poco Interes"
+                # Check for llamar_luego: client explicitly asked to be called back later
+                # FIX N: Keyword fallback — only used when schedule_callback was NOT detected in messages.
+                # Expanded keyword list to cover natural speech variations.
+                llamar_luego_keywords = [
+                    # Direct requests
+                    "llámame luego", "llama luego", "llámame después", "llama después",
+                    "llámame más tarde", "llama más tarde", "llamar más tarde",
+                    "llámame mañana", "llama mañana",
+                    # Variations with 'me'
+                    "llamarme después", "llamarme más tarde", "llamarme luego",
+                    "me llamas después", "me llamas más tarde", "me llamas luego",
+                    "me llamas mañana", "me puedes llamar", "puedes llamarme",
+                    "me puedes marcar", "puedes marcarme", "me marcas después",
+                    "me marcas más tarde", "me marcas luego", "me marcas mañana",
+                    # Availability expressions
+                    "en otro momento", "ahora no puedo", "ahora mismo no",
+                    "no es buen momento", "no tengo tiempo ahora",
+                    "estoy ocupada", "estoy ocupado",
+                    "ahora estoy ocupada", "ahora estoy ocupado",
+                    "ahorita no puedo", "ahorita no", "ahorita estoy",
+                    "ocupadita", "ocupadito",
+                    "estoy en algo", "estoy en una reunión", "estoy en el trabajo",
+                    "estoy manejando", "estoy conduciendo", "estoy en clase",
+                    "no puedo hablar ahora", "no puedo hablar en este momento",
+                    "este no es buen momento", "no es un buen momento",
+                    # Indirect / soft refusals
+                    "después te llamo", "te marco después", "yo te llamo",
+                    "luego te llamo", "te llamo yo", "te llamo después",
+                    "te llamo más tarde", "te llamo mañana",
+                    "déjame llamarte", "déjame marcarte",
+                    # Future time references
+                    "la semana que viene", "la próxima semana", "llámame la próxima",
+                    "en unos días", "más adelante", "en otro rato",
+                    "pasado mañana", "esta tarde", "esta noche",
+                    # Time-based (client accepted callback offer)
+                    "en 2 horas", "en dos horas", "en 4 horas", "en cuatro horas",
+                    "en 12 horas", "mañana me llamas", "mañana en la mañana", "mañana en la tarde",
+                    # Spanglish / Miami Spanish
+                    "call me later", "call me back", "call me tomorrow",
+                    "llámame back", "llama me back", "call me after",
+                    "i\'m busy", "i am busy", "i can\'t talk", "can\'t talk right now",
+                    "text me", "mándame un text",
+                ]
+                transcript_lower = transcript.lower() if transcript else ""
+                if any(kw in transcript_lower for kw in llamar_luego_keywords):
+                    outcome = "llamar_luego"
+                    outcome_label = "Llamar Luego"
+                    stage = "Llamar Luego"
+                    print("[outcome] llamar_luego via keyword fallback (schedule_callback not in messages)")
+                else:
+                    outcome = "no_agendo"
+                    outcome_label = "No Agendó"
+                    stage = "Poco Interes"
 
         # ── Step 3: Find the GHL contact by phone ─────────────────────────────
         contact_id = ""
