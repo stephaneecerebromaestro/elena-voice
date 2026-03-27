@@ -933,34 +933,38 @@ def _process_end_of_call(message):
         transcript = artifact.get("transcript", "")
         call_id = call.get("id", "")
         customer_phone = call.get("customer", {}).get("number", "")
-        # Calculate call duration in seconds from startedAt / endedAt timestamps
-        # FIX-v17.40-B: If call-level timestamps missing (common on inbound calls),
-        # fall back to first/last message timestamps from artifact.messages.
+        # ── Call duration: 3-level fallback chain (inbound + outbound) ──────────
+        # FIX-v17.40-B: Guaranteed non-zero duration for every call type.
+        # Level 1: call.startedAt / call.endedAt  (most accurate — ISO strings)
+        # Level 2: message.startedAt / message.endedAt  (webhook root-level fallback)
+        # Level 3: first/last message.time Unix-ms timestamps (always present if conversation happened)
+        # If all three fail (e.g. 0-message voicemail), duration stays 0 — that's correct.
         call_duration_secs = 0
         try:
-            started_at = call.get("startedAt", "") or message.get("startedAt", "")
-            ended_at = call.get("endedAt", "") or message.get("endedAt", "")
+            # Level 1 + 2: ISO timestamp strings
+            started_at = (call.get("startedAt") or call.get("createdAt") or
+                          message.get("startedAt") or message.get("createdAt") or "")
+            ended_at = (call.get("endedAt") or call.get("updatedAt") or
+                        message.get("endedAt") or message.get("updatedAt") or "")
             if started_at and ended_at:
                 _started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
                 _ended = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
-                call_duration_secs = (_ended - _started).total_seconds()
+                _dur = (_ended - _started).total_seconds()
+                if _dur > 0:
+                    call_duration_secs = _dur
         except Exception:
-            call_duration_secs = 0
-        # FIX-v17.40-B fallback: derive duration from message timestamps if still 0
+            pass
+        # Level 3: Unix-ms timestamps from messages list (most reliable for inbound calls)
         if call_duration_secs == 0 and messages_list:
             try:
-                msg_times = []
+                msg_times_ms = []
                 for _m in messages_list:
-                    for _ts_key in ("time", "timestamp", "createdAt"):
-                        _ts = _m.get(_ts_key)
-                        if _ts:
-                            try:
-                                msg_times.append(datetime.fromisoformat(str(_ts).replace("Z", "+00:00")))
-                            except Exception:
-                                pass
-                            break
-                if len(msg_times) >= 2:
-                    call_duration_secs = (max(msg_times) - min(msg_times)).total_seconds()
+                    # Vapi uses 'time' field (Unix ms integer) on every message
+                    _ts = _m.get("time")
+                    if _ts and isinstance(_ts, (int, float)) and _ts > 1_000_000_000_000:
+                        msg_times_ms.append(_ts)
+                if len(msg_times_ms) >= 2:
+                    call_duration_secs = (max(msg_times_ms) - min(msg_times_ms)) / 1000.0
             except Exception:
                 pass
         # Detect inbound vs outbound
