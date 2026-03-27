@@ -102,7 +102,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.37"  # CRITICAL FIX: has_any_tool_call UnboundLocalError crashed end-of-call handler — all GHL fields were empty after every call that didn't hit silence-timed-out path
+SERVER_VERSION = "v17.38"  # CRITICAL FIX: has_any_tool_call UnboundLocalError crashed end-of-call handler — all GHL fields were empty after every call that didn't hit silence-timed-out path
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -685,7 +685,8 @@ def handle_get_appointment_by_contact(args):
             "startTime": start_raw,
             "humanTime": human_time,
             "title": appt.get("title", ""),
-            "status": appt.get("appointmentStatus", "")
+            "status": appt.get("appointmentStatus", ""),
+            "createdAt": appt.get("createdAt", "")  # FIX BUG3-v2: needed to detect if appt was created THIS call
         })
 
     # Primary appointment (soonest)
@@ -699,6 +700,7 @@ def handle_get_appointment_by_contact(args):
             "humanTime": primary["humanTime"],
             "title": primary["title"],
             "status": primary["status"],
+            "createdAt": primary["createdAt"],  # FIX BUG3-v2
             "total_appointments": 1,
             "message": f"Cita encontrada: {primary['humanTime']} (hora de Miami). ID: {primary['appointmentId']}"
         }
@@ -712,6 +714,7 @@ def handle_get_appointment_by_contact(args):
             "humanTime": primary["humanTime"],
             "title": primary["title"],
             "status": primary["status"],
+            "createdAt": primary["createdAt"],  # FIX BUG3-v2
             "total_appointments": len(appt_list),
             "all_appointments": appt_list,
             "message": (
@@ -1241,28 +1244,45 @@ def _process_end_of_call(message):
                 if appt_check.get("found"):
                     appt_start_raw = appt_check.get("startTime", "")
                     appt_id_check = appt_check.get("appointmentId", "")
-                    if appt_id_check and call_duration_secs > 0:
-                        # Only trust this lookup if we have a call start time to compare against.
-                        # We use call start time + call duration + 5min buffer as the window.
-                        # If timestamps are missing (call_duration_secs == 0), skip this check
-                        # to avoid false positives — better to miss an agendo than to fabricate one.
+                    appt_created_raw = appt_check.get("createdAt", "")  # FIX BUG3-v2: use createdAt
+                    if appt_id_check:
+                        # FIX BUG3-v2: Compare appointment createdAt against call start time.
+                        # Previous logic used (now_utc - call_duration_secs) which is unreliable
+                        # when call_duration_secs == 0 (Vapi omits timestamps on some calls).
+                        # New logic: if the appointment was CREATED within 10 minutes of now,
+                        # it was almost certainly created during this call.
+                        # If createdAt is not available, fall back to the 30-min window only
+                        # when call_duration_secs > 0 (to avoid false positives on 0-duration calls).
                         try:
-                            appt_dt = datetime.fromisoformat(appt_start_raw.replace("Z", "+00:00"))
                             now_utc = datetime.now(pytz.utc)
-                            # B2 FIX: 30-minute window instead of 7 days
-                            # Appointment must be in the future AND the call started < 30 min ago
-                            call_started_utc = now_utc - timedelta(seconds=call_duration_secs)
-                            minutes_since_call_start = (now_utc - call_started_utc).total_seconds() / 60
-                            if appt_dt > now_utc and minutes_since_call_start <= 30:
-                                agendo = True
-                                appointment_id = appt_id_check
-                                booked_time = appt_check.get("humanTime", "")
-                                outcome = "agendo"
-                                outcome_label = "Agendó"
-                                stage = "Consulta Agendada"
-                                print(f"[FIX BUG3] agendo detected via GHL lookup (call started {minutes_since_call_start:.1f}min ago)")
-                        except Exception:
-                            pass
+                            appt_dt = datetime.fromisoformat(appt_start_raw.replace("Z", "+00:00")) if appt_start_raw else None
+                            # Primary check: was the appointment CREATED in the last 10 minutes?
+                            if appt_created_raw:
+                                appt_created_dt = datetime.fromisoformat(appt_created_raw.replace("Z", "+00:00"))
+                                minutes_since_created = (now_utc - appt_created_dt).total_seconds() / 60
+                                if appt_dt and appt_dt > now_utc and minutes_since_created <= 10:
+                                    agendo = True
+                                    appointment_id = appt_id_check
+                                    booked_time = appt_check.get("humanTime", "")
+                                    outcome = "agendo"
+                                    outcome_label = "Agendó"
+                                    stage = "Consulta Agendada"
+                                    print(f"[FIX BUG3-v2] agendo via createdAt (created {minutes_since_created:.1f}min ago)")
+                            elif call_duration_secs > 0:
+                                # Fallback: no createdAt available, use call duration window
+                                call_started_utc = now_utc - timedelta(seconds=call_duration_secs)
+                                minutes_since_call_start = (now_utc - call_started_utc).total_seconds() / 60
+                                if appt_dt and appt_dt > now_utc and minutes_since_call_start <= 30:
+                                    agendo = True
+                                    appointment_id = appt_id_check
+                                    booked_time = appt_check.get("humanTime", "")
+                                    outcome = "agendo"
+                                    outcome_label = "Agendó"
+                                    stage = "Consulta Agendada"
+                                    print(f"[FIX BUG3-v2] agendo via duration fallback (call started {minutes_since_call_start:.1f}min ago)")
+                            # If neither condition met: appointment exists but was pre-existing — skip
+                        except Exception as _bug3_err:
+                            print(f"[WARN] FIX BUG3-v2 parse error: {_bug3_err}")
             except Exception:
                 pass
 
