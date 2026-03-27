@@ -5,7 +5,7 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
-VERSION: v17.26 — All fixes applied:
+VERSION: v17.27 — All fixes applied:
   FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
   FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
   FIX C: Duplicate appointment detection before create_booking
@@ -30,6 +30,8 @@ VERSION: v17.26 — All fixes applied:
           Eliminates double-outcome bug where no_agendo overwrote llamar_luego
           Call counters — elena_total_calls (all calls) and elena_conversations
           (calls where client spoke) are incremented on every end-of-call
+  FIX P: end-of-call-report runs in background thread — worker returns 200 OK immediately,
+          GHL writes happen async. Handles 100+ simultaneous calls without blocking.
 
 Handles tool calls from Vapi during live phone conversations:
 - check_availability: Check calendar availability (next 30 days)
@@ -70,7 +72,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.26"
+SERVER_VERSION = "v17.27"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -1361,8 +1363,12 @@ def vapi_server_url():
             return jsonify({"result": json.dumps(result, ensure_ascii=False)}), 200, cors
 
         elif message_type == "end-of-call-report":
-            # Process end-of-call: update sheet with correct Agendó and Stage
-            _process_end_of_call(message)
+            # FIX P: Run end-of-call processing in a background thread.
+            # This releases the gunicorn worker immediately (200 OK to Vapi in <1ms)
+            # while GHL writes happen asynchronously. Critical for 100+ simultaneous calls
+            # where synchronous processing would block all workers and cause Vapi timeouts.
+            t = threading.Thread(target=_process_end_of_call, args=(message,), daemon=True)
+            t.start()
             return jsonify({"status": "ok"}), 200, cors
 
         elif message_type in ["status-update", "hang", "speech-update", "transcript"]:
