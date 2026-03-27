@@ -215,8 +215,8 @@ tools = [
                 "SIEMPRE llama get_current_time PRIMERO para saber la hora real de Miami. "
                 "Luego elige hours según lo que dijo el cliente: "
                 "2 = en 2 horas / ahorita / más tarde (vago); "
-                "4 = en 4 horas / esta tarde / hora específica ≤5h desde ahora; "
-                "12 = mañana / pasado mañana / hora específica >5h; "
+                "4 = en 4 horas / esta tarde / hora específica 4-8h desde ahora; "
+                "12 = mañana / pasado mañana / hora específica >8h desde ahora; "
                 "120 = próxima semana / en unos días / más adelante."
             ),
             "parameters": {
