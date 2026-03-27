@@ -82,7 +82,7 @@ VERIFICANDO_PHRASES = [
     "déjame ver", "déjame verificar", "estoy revisando", "solo un segundo"
 ]
 
-SERVER_VERSION = "v17.33"  # AUDIT FIX: M5 slots cap, M6 VERIFICANDO_PHRASES constant, M7 lock TTL cleanup
+SERVER_VERSION = "v17.34"  # C2: analysisPlan (summary+structuredData+successEval), C3: pivot logic botox→SRA, elena_success_eval→GHL
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -847,7 +847,10 @@ def _process_end_of_call(message):
         artifact = message.get("artifact", {})
         messages_list = artifact.get("messages", call.get("messages", []))
         ended_reason = call.get("endedReason", message.get("endedReason", ""))
-        summary = message.get("analysis", {}).get("summary", "") or artifact.get("summary", call.get("summary", ""))
+        analysis_obj = message.get("analysis", {})
+        summary = analysis_obj.get("summary", "") or artifact.get("summary", call.get("summary", ""))
+        structured_data = analysis_obj.get("structuredData", {})
+        success_eval = analysis_obj.get("successEvaluation", None)  # "true" / "false" / None
         transcript = artifact.get("transcript", "")
         call_id = call.get("id", "")
         customer_phone = call.get("customer", {}).get("number", "")
@@ -1213,6 +1216,21 @@ def _process_end_of_call(message):
                 _update_contact_custom_field(contact_id, "elena_call_id", call_id)
             if appointment_id:
                 _update_contact_custom_field(contact_id, "elena_appointment_id", appointment_id)
+            # Write successEvaluation from Vapi analysisPlan
+            if success_eval is not None:
+                _update_contact_custom_field(contact_id, "elena_success_eval", str(success_eval))
+            # Write structured data fields from analysisPlan
+            if structured_data:
+                if structured_data.get("interest_level"):
+                    _update_contact_custom_field(contact_id, "elena_interest_level", structured_data["interest_level"])
+                if structured_data.get("main_objection"):
+                    _update_contact_custom_field(contact_id, "elena_main_objection", structured_data["main_objection"])
+                if structured_data.get("language"):
+                    _update_contact_custom_field(contact_id, "elena_language", structured_data["language"])
+                if structured_data.get("callback_requested") is not None:
+                    _update_contact_custom_field(contact_id, "elena_callback_requested", str(structured_data["callback_requested"]))
+                if structured_data.get("pivot_needed") is not None:
+                    _update_contact_custom_field(contact_id, "elena_pivot_needed", str(structured_data["pivot_needed"]))
 
             # Step 4c: Increment call counters (metrics only — not used for workflow logic)
             # elena_total_calls: every call, regardless of outcome

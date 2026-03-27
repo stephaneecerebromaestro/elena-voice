@@ -308,7 +308,121 @@ patch_body = {
             "maxRetries": 6
         }
     },
-    "voicemailMessage": ""
+    "voicemailMessage": "",
+    "analysisPlan": {
+        "summaryPlan": {
+            "enabled": True,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres un analista de calidad para Elena, agente de IA de Laser Place Miami. "
+                        "Resume la llamada en 2-3 oraciones en español. Incluye: "
+                        "1) Si hubo conversación real con un humano, "
+                        "2) El nivel de interés del cliente, "
+                        "3) La objeción principal si hubo alguna, "
+                        "4) El resultado final (cita agendada, callback, no interesado, etc.)."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": "Aquí está la transcripción de la llamada: {{transcript}}"
+                }
+            ]
+        },
+        "structuredDataPlan": {
+            "enabled": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["agendo", "no_contesto", "llamar_luego", "no_agendo", "error_tecnico"],
+                        "description": "Resultado final de la llamada. agendo=cita creada, no_contesto=no contestó/buzón, llamar_luego=pidió callback, no_agendo=habló pero no agendó, error_tecnico=error del sistema"
+                    },
+                    "conversation_happened": {
+                        "type": "boolean",
+                        "description": "True si hubo conversación real con un humano (no buzón de voz)"
+                    },
+                    "language": {
+                        "type": "string",
+                        "enum": ["spanish", "english", "mixed"],
+                        "description": "Idioma principal usado por el cliente durante la llamada"
+                    },
+                    "client_name": {
+                        "type": "string",
+                        "description": "Nombre del cliente si se mencionó durante la llamada, o vacío si no"
+                    },
+                    "interest_level": {
+                        "type": "string",
+                        "enum": ["alto", "medio", "bajo", "ninguno", "desconocido"],
+                        "description": "Nivel de interés del cliente en el tratamiento o la cita"
+                    },
+                    "main_objection": {
+                        "type": "string",
+                        "description": "Objeción principal del cliente (precio, tiempo, miedo, ya tiene proveedor, etc.) o vacío si no hubo"
+                    },
+                    "callback_requested": {
+                        "type": "boolean",
+                        "description": "True si el cliente pidió que lo llamen en otro momento"
+                    },
+                    "pivot_needed": {
+                        "type": "boolean",
+                        "description": "True si el cliente rechazó Botox pero mostró interés en otro tratamiento"
+                    },
+                    "booked_slot": {
+                        "type": "string",
+                        "description": "Fecha y hora de la cita agendada en formato legible, o vacío si no se agendó"
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Notas adicionales relevantes sobre la llamada (máx 150 caracteres)"
+                    }
+                },
+                "required": ["outcome", "conversation_happened", "language", "interest_level", "callback_requested", "pivot_needed"]
+            },
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Analiza la transcripción de esta llamada de Elena (agente IA de Laser Place Miami) "
+                        "y extrae los datos estructurados. "
+                        "REGLAS CRÍTICAS para 'outcome': "
+                        "- 'agendo' SOLO si se confirmó una cita con fecha y hora específica. "
+                        "- 'no_contesto' si fue buzón de voz, no contestó, o la llamada duró menos de 20 segundos. "
+                        "- 'llamar_luego' si el cliente pidió explícitamente que lo llamen en otro momento. "
+                        "- 'no_agendo' si hubo conversación real pero no se agendó cita. "
+                        "- 'error_tecnico' solo si hubo un error técnico del sistema. "
+                        "Para 'conversation_happened': True solo si un humano real respondió y habló (no buzón). "
+                        "Para 'interest_level': evalúa el tono, preguntas y respuestas del cliente."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": "Transcripción: {{transcript}}"
+                }
+            ]
+        },
+        "successEvaluationPlan": {
+            "enabled": True,
+            "rubric": "PassFail",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Evalúa si Elena (agente IA de Laser Place Miami) tuvo éxito en esta llamada. "
+                        "CRITERIO DE ÉXITO (Pass): Se agendó una cita para el Skin Reveal Analysis. "
+                        "CRITERIO DE FALLO (Fail): No se agendó cita, independientemente del motivo. "
+                        "Responde ÚNICAMENTE con 'true' (éxito) o 'false' (fallo). Sin explicaciones."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": "Transcripción: {{transcript}}"
+                }
+            ]
+        }
+    }
 }
 
 print(f"\nApplying full PATCH with {len(tools)} tools...")
@@ -364,9 +478,22 @@ if patch_resp.status_code == 200:
             all_ok = False
         print(f"     {status} {t}")
 
-    if all_ok:
+    # Verify analysisPlan
+    result_analysis = result.get("analysisPlan", {})
+    summary_ok = result_analysis.get("summaryPlan", {}).get("enabled", False)
+    structured_ok = result_analysis.get("structuredDataPlan", {}).get("enabled", False)
+    success_ok = result_analysis.get("successEvaluationPlan", {}).get("enabled", False)
+    print(f"\n   analysisPlan verification:")
+    print(f"     {'✅' if summary_ok else '❌'} summaryPlan enabled")
+    print(f"     {'✅' if structured_ok else '❌'} structuredDataPlan enabled")
+    print(f"     {'✅' if success_ok else '❌'} successEvaluationPlan enabled")
+    analysis_ok = summary_ok and structured_ok and success_ok
+
+    if all_ok and analysis_ok:
         print("\n✅ Full restore complete. All systems operational.")
-    else:
+    elif not all_ok:
         print("\n❌ Some tools missing.")
+    else:
+        print("\n❌ analysisPlan not fully configured.")
 else:
     print(f"❌ ERROR: {patch_resp.text[:500]}")
