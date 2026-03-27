@@ -102,7 +102,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.36"  # Test fixes: T2(silencio), T8(endCall sin despedida), T10(horas callback), T11(proxima semana), T13/T14(idioma), GHL(success_eval+call_duration siempre escritos)
+SERVER_VERSION = "v17.37"  # CRITICAL FIX: has_any_tool_call UnboundLocalError crashed end-of-call handler — all GHL fields were empty after every call that didn't hit silence-timed-out path
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -940,6 +940,10 @@ def _process_end_of_call(message):
         booked_time = ""
         llamar_luego_confirmed = False  # FIX N: set True when schedule_callback succeeded
         callback_hours_confirmed = 0    # FIX N: hours value from schedule_callback result
+        has_any_tool_call = False       # CRITICAL FIX: initialize at top scope — used in multiple
+                                        # outcome branches. Without this, Python raises UnboundLocalError
+                                        # in branches that don't go through silence-timed-out,
+                                        # crashing the entire end-of-call handler before writing to GHL.
 
         for msg in messages_list:
             # Format 1: role=tool with JSON content (older Vapi format)
