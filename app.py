@@ -123,7 +123,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.41"  # FIX A: check_availability 2-slots-per-day algo (shows all available days, not just earliest 2)
+SERVER_VERSION = "v17.42"  # FIX A: check_availability 2-slots-per-day algo (shows all available days, not just earliest 2)
                            # FIX B: reschedule_appointment success = outcome agendo (was no_agendo)
                            # FIX C/D/E: prompt — skip pitch if client already wants to book, no re-call check_availability, endCall post-despedida
 
@@ -954,12 +954,14 @@ def _process_end_of_call(message):
         # Level 3: first/last message.time Unix-ms timestamps (always present if conversation happened)
         # If all three fail (e.g. 0-message voicemail), duration stays 0 — that's correct.
         call_duration_secs = 0
+        call_started_at_str = ""  # FIX F3: preserved for BUG3-v3 appointment comparison
         try:
             # Level 1 + 2: ISO timestamp strings
             started_at = (call.get("startedAt") or call.get("createdAt") or
                           message.get("startedAt") or message.get("createdAt") or "")
             ended_at = (call.get("endedAt") or call.get("updatedAt") or
                         message.get("endedAt") or message.get("updatedAt") or "")
+            call_started_at_str = started_at  # save for FIX F3
             if started_at and ended_at:
                 _started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
                 _ended = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
@@ -1071,11 +1073,74 @@ def _process_end_of_call(message):
             m.get("role") == "user" or m.get("role") == "human"
             for m in messages_list
         )
+
+        # FIX F2: Detect voicemail phrases transcribed as user speech.
+        # Vapi transcribes voicemail audio as role=user. If ALL user messages are
+        # voicemail phrases, treat user_spoke as False for outcome classification.
+        VOICEMAIL_PHRASES = [
+            # English voicemail system phrases
+            "at the tone", "please record your message", "please leave a message",
+            "leave a message", "leave your message", "after the tone", "after the beep",
+            "press pound", "press star", "press 1", "press one",
+            "when you have finished", "when you've finished", "when you are finished",
+            "simply hang up", "hang up or press", "further options", "further option",
+            "not available", "is not available", "cannot take your call",
+            "you have reached", "you've reached", "this is the voicemail",
+            "the person you are calling", "the number you have dialed",
+            "mailbox is full", "mailbox is not set up",
+            # Spanish voicemail system phrases
+            "deje su mensaje", "deja tu mensaje", "deje un mensaje",
+            "después del tono", "después de la señal", "al escuchar el tono",
+            "marque la tecla", "oprima el", "oprima la",
+            "no está disponible", "no se encuentra disponible",
+            "ha llamado a", "usted ha llamado",
+            "el buzón de voz", "el correo de voz",
+            "deje su nombre", "deje sus datos",
+        ]
+        user_msgs_content = [
+            str(m.get("message", m.get("content", ""))).lower()
+            for m in messages_list
+            if m.get("role") in ("user", "human")
+        ]
+        # user_spoke_real = True only if at least one user message is NOT a voicemail phrase
+        user_spoke_real = False
+        if user_msgs_content:
+            for _uc in user_msgs_content:
+                if _uc and not any(vp in _uc for vp in VOICEMAIL_PHRASES):
+                    user_spoke_real = True
+                    break
+        # Override user_spoke with the real-human check
+        if user_spoke and not user_spoke_real:
+            print(f"[FIX F2] user_spoke overridden to False — all user messages are voicemail phrases")
+            user_spoke = False
+
         # Calls under 20 seconds are treated as no_contesto regardless of who spoke.
         # Exception: if duration is 0 (startedAt/endedAt missing — common in inbound calls)
         # AND user actually spoke, the duration is unreliable — do NOT treat as short call.
         duration_reliable = call_duration_secs > 0
         short_call = duration_reliable and call_duration_secs < 20
+
+        # FIX F1: Extend no_contesto to calls 20-45s where client said only 1 word/phrase
+        # and hung up (customer-ended-call) without Elena executing any tool.
+        # This covers: "Hello?", "Hola?", "Sí?", "¿Quién es?" — not a real conversation.
+        # ONLY applies when: customer-ended-call + no tool calls + <=2 user messages + <=5 words total
+        _has_any_tool_f1 = any(
+            m.get("role") in ("tool_calls", "tool_call") or
+            m.get("type") in ("tool-call", "tool-call-result") or
+            m.get("role") == "tool_call_result"
+            for m in messages_list
+        )
+        _user_word_count = sum(len(str(m.get("message", m.get("content", ""))).split()) for m in messages_list if m.get("role") in ("user", "human"))
+        _user_msg_count = len([m for m in messages_list if m.get("role") in ("user", "human")])
+        shallow_call = (
+            not short_call  # not already caught by short_call
+            and duration_reliable
+            and call_duration_secs < 45
+            and ended_reason == "customer-ended-call"
+            and not _has_any_tool_f1
+            and _user_msg_count <= 2
+            and _user_word_count <= 8
+        )
 
         # Voicemail / no-answer detection: Elena ended the call AND duration < 45s.
         # We use 45s because voicemail greetings + Elena's goodbye can last up to ~40s.
@@ -1125,6 +1190,13 @@ def _process_end_of_call(message):
             outcome = "no_contesto"
             outcome_label = "No Contestó"
             stage = "Llamada 1"
+        elif shallow_call:
+            # FIX F1: Call 20-45s, customer hung up, no tool calls, <=2 user msgs, <=8 words.
+            # Client said 'Hello?' or 'Hola?' and hung up before a real conversation started.
+            outcome = "no_contesto"
+            outcome_label = "No Contestó"
+            stage = "Llamada 1"
+            print(f"[FIX F1] shallow_call no_contesto: {call_duration_secs:.0f}s, {_user_msg_count} user msgs, {_user_word_count} words")
         elif ended_reason in (
             "voicemail", "no-answer",
             "customer-did-not-answer", "customer-busy"
@@ -1293,59 +1365,56 @@ def _process_end_of_call(message):
                 if contact_result.get("found"):
                     contact_id = contact_result.get("contactId", "")
 
-        # FIX BUG3: Vapi does not always include tool-call results in artifact.messages.
+        # FIX BUG3-v3: Vapi does not always include tool-call results in artifact.messages.
         # If agendo is still False after scanning messages, do a direct GHL lookup:
-        # check if an appointment was created for this contact during this call.
-        # B2 FIX: Reduced window from 7 days to 30 minutes.
-        # The 7-day window caused pre-existing appointments (booked in prior calls) to be
-        # detected as new bookings, generating false-positive 'agendo' outcomes and
-        # incorrectly firing the GHL workflow. 30 minutes is tight enough to only catch
-        # appointments booked during the current call.
+        # check if an appointment was created for this contact DURING this specific call.
+        #
+        # FIX F3: Use call.startedAt (the actual call start time) to compare against appt.createdAt.
+        # Previous BUG3-v2 used (now_utc - 10min) which caused false positives when:
+        # - Contact had a prior call that booked an appointment <10 minutes earlier
+        # - New call arrives, BUG3-v2 sees the recent appointment and marks this call as agendo
+        # Fix: appointment.createdAt must be AFTER call.startedAt (not just within 10 min of now).
         if not agendo and contact_id:
             try:
                 appt_check = handle_get_appointment_by_contact({"contactId": contact_id})
                 if appt_check.get("found"):
                     appt_start_raw = appt_check.get("startTime", "")
                     appt_id_check = appt_check.get("appointmentId", "")
-                    appt_created_raw = appt_check.get("createdAt", "")  # FIX BUG3-v2: use createdAt
+                    appt_created_raw = appt_check.get("createdAt", "")
                     if appt_id_check:
-                        # FIX BUG3-v2: Compare appointment createdAt against call start time.
-                        # Previous logic used (now_utc - call_duration_secs) which is unreliable
-                        # when call_duration_secs == 0 (Vapi omits timestamps on some calls).
-                        # New logic: if the appointment was CREATED within 10 minutes of now,
-                        # it was almost certainly created during this call.
-                        # If createdAt is not available, fall back to the 30-min window only
-                        # when call_duration_secs > 0 (to avoid false positives on 0-duration calls).
                         try:
                             now_utc = datetime.now(pytz.utc)
                             appt_dt = datetime.fromisoformat(appt_start_raw.replace("Z", "+00:00")) if appt_start_raw else None
-                            # Primary check: was the appointment CREATED in the last 10 minutes?
-                            if appt_created_raw:
+                            # FIX F3: Primary check — appointment.createdAt must be AFTER call.startedAt.
+                            # This prevents appointments from prior calls from triggering agendo.
+                            if appt_created_raw and call_started_at_str:
+                                appt_created_dt = datetime.fromisoformat(appt_created_raw.replace("Z", "+00:00"))
+                                call_started_dt = datetime.fromisoformat(call_started_at_str.replace("Z", "+00:00"))
+                                # Appointment must have been created AFTER this call started
+                                # and the appointment must be in the future (not a past appointment)
+                                if appt_dt and appt_dt > now_utc and appt_created_dt >= call_started_dt:
+                                    agendo = True
+                                    appointment_id = appt_id_check
+                                    booked_time = appt_check.get("humanTime", "")
+                                    outcome = "agendo"
+                                    outcome_label = "Agendó"
+                                    stage = "Consulta Agendada"
+                                    print(f"[FIX BUG3-v3] agendo via appt.createdAt >= call.startedAt")
+                            elif appt_created_raw and not call_started_at_str:
+                                # No call.startedAt available — fall back to 5-minute window (tighter than before)
                                 appt_created_dt = datetime.fromisoformat(appt_created_raw.replace("Z", "+00:00"))
                                 minutes_since_created = (now_utc - appt_created_dt).total_seconds() / 60
-                                if appt_dt and appt_dt > now_utc and minutes_since_created <= 10:
+                                if appt_dt and appt_dt > now_utc and minutes_since_created <= 5:
                                     agendo = True
                                     appointment_id = appt_id_check
                                     booked_time = appt_check.get("humanTime", "")
                                     outcome = "agendo"
                                     outcome_label = "Agendó"
                                     stage = "Consulta Agendada"
-                                    print(f"[FIX BUG3-v2] agendo via createdAt (created {minutes_since_created:.1f}min ago)")
-                            elif call_duration_secs > 0:
-                                # Fallback: no createdAt available, use call duration window
-                                call_started_utc = now_utc - timedelta(seconds=call_duration_secs)
-                                minutes_since_call_start = (now_utc - call_started_utc).total_seconds() / 60
-                                if appt_dt and appt_dt > now_utc and minutes_since_call_start <= 30:
-                                    agendo = True
-                                    appointment_id = appt_id_check
-                                    booked_time = appt_check.get("humanTime", "")
-                                    outcome = "agendo"
-                                    outcome_label = "Agendó"
-                                    stage = "Consulta Agendada"
-                                    print(f"[FIX BUG3-v2] agendo via duration fallback (call started {minutes_since_call_start:.1f}min ago)")
+                                    print(f"[FIX BUG3-v3] agendo via createdAt fallback (created {minutes_since_created:.1f}min ago, no call.startedAt)")
                             # If neither condition met: appointment exists but was pre-existing — skip
                         except Exception as _bug3_err:
-                            print(f"[WARN] FIX BUG3-v2 parse error: {_bug3_err}")
+                            print(f"[WARN] FIX BUG3-v3 parse error: {_bug3_err}")
             except Exception:
                 pass
 
