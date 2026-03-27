@@ -123,7 +123,9 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.40"  # 8 conversational fixes (martes loop, check_availability day mismatch, silence fill, 25-word limit, muletillas) + call_duration fallback from message timestamps
+SERVER_VERSION = "v17.41"  # FIX A: check_availability 2-slots-per-day algo (shows all available days, not just earliest 2)
+                           # FIX B: reschedule_appointment success = outcome agendo (was no_agendo)
+                           # FIX C/D/E: prompt — skip pitch if client already wants to book, no re-call check_availability, endCall post-despedida
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -329,10 +331,21 @@ def handle_check_availability(args):
                     slots.append({"time": slot, "label": slot, "is_tuesday": False, "date": date_key})
 
     if slots:
-        # Sort: Tuesdays first, then by date
-        tuesday_slots = [s for s in slots if s["is_tuesday"]]
-        other_slots = [s for s in slots if not s["is_tuesday"]]
-        ordered = tuesday_slots[:5] + other_slots[:5]  # M5 FIX: max 10 slots total to reduce LLM context
+        # FIX A: 2 slots per unique day — ensures LLM sees ALL available days, not just the 2 earliest.
+        # Old algo (5 tuesday + 5 other) hid wednesday/thursday/friday when sat/mon filled the 5 'other' spots.
+        # New algo: group by date, take 2 slots per date, prioritize tuesdays first, cap at 14 total.
+        from collections import defaultdict
+        slots_by_date = defaultdict(list)
+        for s in slots:
+            slots_by_date[s["date"]].append(s)
+        tuesday_dates = sorted([d for d in slots_by_date if any(s["is_tuesday"] for s in slots_by_date[d])])
+        other_dates = sorted([d for d in slots_by_date if d not in tuesday_dates])
+        ordered = []
+        for date in tuesday_dates:
+            ordered.extend(slots_by_date[date][:2])
+        for date in other_dates:
+            ordered.extend(slots_by_date[date][:2])
+        ordered = ordered[:14]  # cap at 14 (7 days × 2 slots)
         return {
             "available": True,
             "slots": ordered,
@@ -345,7 +358,8 @@ def handle_check_availability(args):
             ),
             "message": (
                 "Horarios disponibles. Prioriza martes (is_tuesday=true). "
-                "Usa el 'label' para hablar con el cliente y el 'time' exacto para las herramientas."
+                "Usa el 'label' para hablar con el cliente y el 'time' exacto para las herramientas. "
+                "Si el cliente pide un día que NO aparece en esta lista, dile exactamente qué días SÍ hay disponibles."
             )
         }
     else:
@@ -992,6 +1006,27 @@ def _process_end_of_call(message):
                                         # crashing the entire end-of-call handler before writing to GHL.
 
         for msg in messages_list:
+            # ── Helper: parse a tool result dict from any message format ──────
+            def _parse_tool_result(parsed):
+                """Given a parsed dict from a tool result, update agendo/llamar_luego flags.
+                FIX B: reschedule_appointment success (has newStartTime) also counts as agendo.
+                Returns True if agendo was set (caller should break)."""
+                nonlocal agendo, appointment_id, booked_time, llamar_luego_confirmed, callback_hours_confirmed
+                if not isinstance(parsed, dict) or not parsed.get("success"):
+                    return False
+                # create_booking success: has appointmentId (new booking)
+                # reschedule_appointment success: has appointmentId + newStartTime
+                if parsed.get("appointmentId"):
+                    agendo = True
+                    appointment_id = parsed.get("appointmentId", "")
+                    booked_time = parsed.get("message", "")
+                    return True
+                # schedule_callback success
+                if parsed.get("hours") and parsed.get("callbackTime"):
+                    llamar_luego_confirmed = True
+                    callback_hours_confirmed = int(parsed.get("hours", 2))
+                return False
+
             # Format 1: role=tool with JSON content (older Vapi format)
             if msg.get("role") == "tool":
                 content = msg.get("content", "")
@@ -999,48 +1034,29 @@ def _process_end_of_call(message):
                     for item in content:
                         text = item.get("text", "") if isinstance(item, dict) else ""
                         try:
-                            parsed = json.loads(text)
-                            if isinstance(parsed, dict) and parsed.get("success"):
-                                if parsed.get("appointmentId"):
-                                    agendo = True
-                                    appointment_id = parsed.get("appointmentId", "")
-                                    booked_time = parsed.get("message", "")
-                                    break
-                                if parsed.get("hours") and parsed.get("callbackTime"):
-                                    # FIX N: schedule_callback returned success
-                                    llamar_luego_confirmed = True
-                                    callback_hours_confirmed = int(parsed.get("hours", 2))
+                            if _parse_tool_result(json.loads(text)):
+                                break
                         except Exception:
                             pass
                 elif isinstance(content, str):
                     try:
-                        parsed = json.loads(content)
-                        if isinstance(parsed, dict) and parsed.get("success"):
-                            if parsed.get("appointmentId"):
-                                agendo = True
-                                appointment_id = parsed.get("appointmentId", "")
-                                booked_time = parsed.get("message", "")
-                                break
-                            if parsed.get("hours") and parsed.get("callbackTime"):
-                                llamar_luego_confirmed = True
-                                callback_hours_confirmed = int(parsed.get("hours", 2))
+                        _parse_tool_result(json.loads(content))
                     except Exception:
                         pass
 
-            # Format 2: type=tool-call-result (newer Vapi format)
+            # Format 2: role=tool_call_result (Vapi current format — confirmed in prod logs)
+            if msg.get("role") == "tool_call_result":
+                result_str = msg.get("result", "")
+                try:
+                    _parse_tool_result(json.loads(result_str) if isinstance(result_str, str) else result_str)
+                except Exception:
+                    pass
+
+            # Format 3: type=tool-call-result (older Vapi format variant)
             if msg.get("type") == "tool-call-result":
                 result_str = msg.get("result", "")
                 try:
-                    parsed = json.loads(result_str) if isinstance(result_str, str) else result_str
-                    if isinstance(parsed, dict) and parsed.get("success"):
-                        if parsed.get("appointmentId"):
-                            agendo = True
-                            appointment_id = parsed.get("appointmentId", "")
-                            booked_time = parsed.get("message", "")
-                            break
-                        if parsed.get("hours") and parsed.get("callbackTime"):
-                            llamar_luego_confirmed = True
-                            callback_hours_confirmed = int(parsed.get("hours", 2))
+                    _parse_tool_result(json.loads(result_str) if isinstance(result_str, str) else result_str)
                 except Exception:
                     pass
 
