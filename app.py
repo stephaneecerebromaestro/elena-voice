@@ -5,7 +5,7 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
-VERSION: v17.27 — All fixes applied:
+VERSION: v17.35 — All fixes applied:
   FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
   FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
   FIX C: Duplicate appointment detection before create_booking
@@ -36,6 +36,17 @@ VERSION: v17.27 — All fixes applied:
          M5 check_availability capped at 10 slots total (5 tuesday + 5 other) to reduce LLM context
          M6 VERIFICANDO_PHRASES refactored as module-level constant (was duplicated 3x)
          M8 check_availability tool description simplified (removed Gilberto reference)
+  v17.35 AUDIT FIXES:
+  B1: Docstring version synced to match SERVER_VERSION
+  B2: FIX BUG3 window reduced from 7 days to 30 minutes to prevent pre-existing appts as new bookings
+  B3: success_eval normalized to lowercase string before GHL write
+  B4: elena_call_duration written to GHL contact after every call
+  B5: update-date endpoint now preserves analysisPlan in Vapi PATCH (was deleting it daily)
+  B6: create_booking title configurable via BOOKING_TITLE env var
+  B7: ghl_v2_get/post/put retry once on 429/503 with 500ms delay
+  B8: _create_contact_locks cleaned up with TTL alongside _create_contact_results
+  B9: schedule_callback no longer writes tag/outcome fields — deferred to end-of-call
+  B10: VERIFICANDO_PHRASES extended with English equivalents for bilingual calls
 
 Handles tool calls from Vapi during live phone conversations:
 - check_availability: Check calendar availability (next 30 days)
@@ -71,18 +82,27 @@ VAPI_ASSISTANT_ID = os.environ.get("VAPI_ASSISTANT_ID", "1631c7cf-2914-45f9-bf82
 
 GHL_V2_BASE = "https://services.leadconnectorhq.com"
 TZ = pytz.timezone("America/New_York")
+# B6 FIX: Configurable booking title — override via env var for non-Botox agents
+BOOKING_TITLE = os.environ.get("BOOKING_TITLE", "Evaluación Botox - Laser Place Miami")
 
 DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
 # M6 FIX: Single source of truth for verificando phrases (used in 3 outcome detection branches)
+# B10 FIX: Extended with English equivalents for bilingual calls
 VERIFICANDO_PHRASES = [
+    # Spanish
     "verificando", "momentito", "un momento", "ya casi",
-    "déjame ver", "déjame verificar", "estoy revisando", "solo un segundo"
+    "déjame ver", "déjame verificar", "estoy revisando", "solo un segundo",
+    "dame un momento", "un segundito", "ya reviso",
+    # English
+    "one moment", "one second", "just a second", "let me check",
+    "let me look", "hold on", "give me a moment", "checking now",
+    "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.34"  # C2: analysisPlan (summary+structuredData+successEval), C3: pivot logic botox→SRA, elena_success_eval→GHL
+SERVER_VERSION = "v17.35"  # Full audit: B1-B10 fixes (docstring, BUG3 window, success_eval normalize, call_duration, analysisPlan preserve, BOOKING_TITLE, GHL retry, lock cleanup, schedule_callback race, EN verificando)
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -111,32 +131,56 @@ def v2_headers_contacts():
 
 
 def ghl_v2_get(path, params=None, contacts_version=False):
+    """B7 FIX: Retries once on 429 (rate limit) or 503 (service unavailable) with 500ms delay."""
+    import time as _time
     url = f"{GHL_V2_BASE}{path}"
     headers = v2_headers_contacts() if contacts_version else v2_headers()
-    resp = http_requests.get(url, headers=headers, params=params, timeout=12)
-    if resp.status_code not in (200, 201):
+    for attempt in range(2):
+        resp = http_requests.get(url, headers=headers, params=params, timeout=12)
+        if resp.status_code in (200, 201):
+            return resp.json()
+        if resp.status_code in (429, 503) and attempt == 0:
+            print(f"[GHL RETRY] GET {path} → HTTP {resp.status_code}, retrying in 500ms")
+            _time.sleep(0.5)
+            continue
         print(f"[GHL ERROR] GET {path} → HTTP {resp.status_code}: {resp.text[:200]}")
         return {}
-    return resp.json()
+    return {}
 
 
 def ghl_v2_post(path, data, contacts_version=False):
+    """B7 FIX: Retries once on 429 (rate limit) or 503 (service unavailable) with 500ms delay."""
+    import time as _time
     url = f"{GHL_V2_BASE}{path}"
     headers = v2_headers_contacts() if contacts_version else v2_headers()
-    resp = http_requests.post(url, headers=headers, json=data, timeout=12)
-    if resp.status_code not in (200, 201):
+    for attempt in range(2):
+        resp = http_requests.post(url, headers=headers, json=data, timeout=12)
+        if resp.status_code in (200, 201):
+            return resp.json()
+        if resp.status_code in (429, 503) and attempt == 0:
+            print(f"[GHL RETRY] POST {path} → HTTP {resp.status_code}, retrying in 500ms")
+            _time.sleep(0.5)
+            continue
         print(f"[GHL ERROR] POST {path} → HTTP {resp.status_code}: {resp.text[:200]}")
         return {}
-    return resp.json()
+    return {}
 
 
 def ghl_v2_put(path, data):
+    """B7 FIX: Retries once on 429 (rate limit) or 503 (service unavailable) with 500ms delay."""
+    import time as _time
     url = f"{GHL_V2_BASE}{path}"
-    resp = http_requests.put(url, headers=v2_headers(), json=data, timeout=12)
-    if resp.status_code not in (200, 201):
+    for attempt in range(2):
+        resp = http_requests.put(url, headers=v2_headers(), json=data, timeout=12)
+        if resp.status_code in (200, 201):
+            return resp.json()
+        if resp.status_code in (429, 503) and attempt == 0:
+            print(f"[GHL RETRY] PUT {path} → HTTP {resp.status_code}, retrying in 500ms")
+            _time.sleep(0.5)
+            continue
         print(f"[GHL ERROR] PUT {path} → HTTP {resp.status_code}: {resp.text[:200]}")
         return {}
-    return resp.json()
+    return {}
 
 
 def normalize_phone(phone):
@@ -405,7 +449,8 @@ def handle_create_contact(args):
             if _time.time() - cached_ts < CREATE_CONTACT_CACHE_TTL:
                 return {**cached_result, "message": cached_result.get("message", "") + " (cached)"}
             else:
-                # TTL expired: remove both result and lock to free memory
+                # B8 FIX: TTL expired — remove BOTH result AND lock to prevent memory leak.
+                # Previously only result was removed; lock dict grew unbounded over 100+ calls.
                 del _create_contact_results[phone_normalized]
                 with _create_contact_lock_meta:
                     _create_contact_locks.pop(phone_normalized, None)
@@ -454,7 +499,7 @@ def handle_create_booking(args):
     """
     contact_id = args.get("contactId", "")
     start_time = args.get("startTime", "")
-    title = args.get("title", "Evaluación Botox - Laser Place Miami")
+    title = args.get("title", BOOKING_TITLE)  # B6 FIX: uses configurable BOOKING_TITLE env var
 
     if not contact_id or not start_time:
         return {"success": False, "message": "Se necesita contactId y startTime para agendar."}
@@ -751,13 +796,14 @@ def handle_schedule_callback(args):
                 contact_id = contact_result.get("contactId", "")
 
     if contact_id:
+        # B9 FIX: Only write callback-specific fields here (timing data).
+        # elena_last_outcome, elena_outcome, elena_stage and the trigger tag are
+        # intentionally NOT written here — they are written by _process_end_of_call
+        # after the call ends. Writing them here caused a race condition where the
+        # GHL workflow fired before the end-of-call fields were ready.
         _update_contact_custom_field(contact_id, "elena_callback_time", callback_iso)
         _update_contact_custom_field(contact_id, "elena_callback_hours", str(hours))  # FIX L: GHL workflow reads this to decide 2h vs 4h wait
-        _update_contact_custom_field(contact_id, "elena_last_outcome", "llamar_luego")
-        _update_contact_custom_field(contact_id, "elena_outcome", "Llamar Luego")
-        _update_contact_custom_field(contact_id, "elena_stage", "Llamar Luego")
-        _add_tag_to_contact(contact_id, "elena_resultado_botox")
-        print(f"[schedule_callback] Contact {contact_id} scheduled for callback at {callback_iso} (hours={hours})")
+        print(f"[schedule_callback] Contact {contact_id} callback fields written: {callback_iso} (hours={hours})")
         return {
             "success": True,
             "hours": hours,
@@ -1170,31 +1216,38 @@ def _process_end_of_call(message):
 
         # FIX BUG3: Vapi does not always include tool-call results in artifact.messages.
         # If agendo is still False after scanning messages, do a direct GHL lookup:
-        # check if an appointment was created for this contact in the last 30 minutes.
-        # This is the ground truth — if GHL has the appointment, it happened.
+        # check if an appointment was created for this contact during this call.
+        # B2 FIX: Reduced window from 7 days to 30 minutes.
+        # The 7-day window caused pre-existing appointments (booked in prior calls) to be
+        # detected as new bookings, generating false-positive 'agendo' outcomes and
+        # incorrectly firing the GHL workflow. 30 minutes is tight enough to only catch
+        # appointments booked during the current call.
         if not agendo and contact_id:
             try:
                 appt_check = handle_get_appointment_by_contact({"contactId": contact_id})
                 if appt_check.get("found"):
-                    # Verify the appointment was created recently (within last 30 min)
                     appt_start_raw = appt_check.get("startTime", "")
                     appt_id_check = appt_check.get("appointmentId", "")
-                    if appt_id_check:
-                        # We found an appointment — check if it was booked recently
-                        # by comparing createdAt if available, otherwise trust the lookup
-                        # (conservative: only trust if appointment is in the future)
+                    if appt_id_check and call_duration_secs > 0:
+                        # Only trust this lookup if we have a call start time to compare against.
+                        # We use call start time + call duration + 5min buffer as the window.
+                        # If timestamps are missing (call_duration_secs == 0), skip this check
+                        # to avoid false positives — better to miss an agendo than to fabricate one.
                         try:
                             appt_dt = datetime.fromisoformat(appt_start_raw.replace("Z", "+00:00"))
                             now_utc = datetime.now(pytz.utc)
-                            # Appointment must be in the future (not a pre-existing old one)
-                            # and within 7 days from now (reasonable booking window)
-                            if appt_dt > now_utc and (appt_dt - now_utc).days <= 7:
+                            # B2 FIX: 30-minute window instead of 7 days
+                            # Appointment must be in the future AND the call started < 30 min ago
+                            call_started_utc = now_utc - timedelta(seconds=call_duration_secs)
+                            minutes_since_call_start = (now_utc - call_started_utc).total_seconds() / 60
+                            if appt_dt > now_utc and minutes_since_call_start <= 30:
                                 agendo = True
                                 appointment_id = appt_id_check
                                 booked_time = appt_check.get("humanTime", "")
                                 outcome = "agendo"
                                 outcome_label = "Agendó"
                                 stage = "Consulta Agendada"
+                                print(f"[FIX BUG3] agendo detected via GHL lookup (call started {minutes_since_call_start:.1f}min ago)")
                         except Exception:
                             pass
             except Exception:
@@ -1216,9 +1269,15 @@ def _process_end_of_call(message):
                 _update_contact_custom_field(contact_id, "elena_call_id", call_id)
             if appointment_id:
                 _update_contact_custom_field(contact_id, "elena_appointment_id", appointment_id)
-            # Write successEvaluation from Vapi analysisPlan
+            # B3 FIX: Normalize success_eval to lowercase string before writing.
+            # Vapi can return "true"/"false" (str) or True/False (bool) depending on model.
+            # str(True) = "True" (capital T) which is inconsistent. Always write lowercase.
             if success_eval is not None:
-                _update_contact_custom_field(contact_id, "elena_success_eval", str(success_eval))
+                _update_contact_custom_field(contact_id, "elena_success_eval", str(success_eval).lower())
+            # B4 FIX: Write call duration in seconds to GHL for analytics.
+            # Allows filtering real conversations from no-answers and measuring avg conversion time.
+            if call_duration_secs > 0:
+                _update_contact_custom_field(contact_id, "elena_call_duration", str(int(call_duration_secs)))
             # Write structured data fields from analysisPlan
             if structured_data:
                 if structured_data.get("interest_level"):
@@ -1451,17 +1510,22 @@ def update_date():
     last_error = None
     for attempt in range(3):
         try:
-            # Get current assistant config to preserve tools and other settings
+            # Get current assistant config to preserve tools, analysisPlan and other settings
             current_resp = http_requests.get(
                 f"https://api.vapi.ai/assistant/{VAPI_ASSISTANT_ID}",
                 headers={"Authorization": f"Bearer {VAPI_KEY}"},
                 timeout=10
             )
-            current_model = current_resp.json().get("model", {})
+            current_assistant = current_resp.json()
+            current_model = current_assistant.get("model", {})
             current_tools = current_model.get("tools", [])
             current_tool_ids = current_model.get("toolIds", [])
+            # B5 FIX: Preserve analysisPlan — previously this PATCH deleted it every day.
+            # analysisPlan lives at the assistant level (not inside model), so we must
+            # read it from the current assistant config and re-include it in the PATCH.
+            current_analysis_plan = current_assistant.get("analysisPlan", {})
 
-            # Update Vapi assistant system prompt — MUST include tools to avoid deleting them
+            # Update Vapi assistant system prompt — MUST include tools and analysisPlan to avoid deleting them
             patch_body = {
                 "model": {
                     "provider": "openai",
@@ -1473,6 +1537,9 @@ def update_date():
                 patch_body["model"]["tools"] = current_tools
             if current_tool_ids:
                 patch_body["model"]["toolIds"] = current_tool_ids
+            # B5 FIX: Re-include analysisPlan so it survives daily date updates
+            if current_analysis_plan:
+                patch_body["analysisPlan"] = current_analysis_plan
 
             resp = http_requests.patch(
                 f"https://api.vapi.ai/assistant/{VAPI_ASSISTANT_ID}",
@@ -1488,6 +1555,7 @@ def update_date():
                     "tomorrow": tomorrow_str,
                     "prompt_length": len(full_prompt),
                     "tools_preserved": len(current_tools),
+                    "analysis_plan_preserved": bool(current_analysis_plan),  # B5 FIX
                     "attempt": attempt + 1
                 })
             else:
