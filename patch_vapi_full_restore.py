@@ -298,6 +298,71 @@ patch_body = {
         "backoffSeconds": 1.5
     },
     "backgroundDenoisingEnabled": True,
+    "silenceTimeoutSeconds": 30,
+    "hooks": [
+        {
+            "name": "silence-check-1",
+            "on": "customer.speech.timeout",
+            "do": [
+                {
+                    "type": "say",
+                    "exact": "¿Sigues ahí?"
+                }
+            ],
+            "options": {
+                "timeoutSeconds": 5,
+                "triggerMaxCount": 1,
+                "triggerResetMode": "onUserSpeech"
+            }
+        },
+        {
+            "name": "silence-check-2",
+            "on": "customer.speech.timeout",
+            "do": [
+                {
+                    "type": "say",
+                    "exact": "¿Me escuchas?"
+                }
+            ],
+            "options": {
+                "timeoutSeconds": 12,
+                "triggerMaxCount": 1,
+                "triggerResetMode": "onUserSpeech"
+            }
+        },
+        {
+            "name": "silence-check-3",
+            "on": "customer.speech.timeout",
+            "do": [
+                {
+                    "type": "say",
+                    "exact": "Hola, ¿estás ahí? Parece que perdimos la conexión. ¡Que tengas un excelente día!"
+                }
+            ],
+            "options": {
+                "timeoutSeconds": 20,
+                "triggerMaxCount": 1,
+                "triggerResetMode": "onUserSpeech"
+            }
+        },
+        {
+            "name": "silence-end-call",
+            "on": "customer.speech.timeout",
+            "do": [
+                {
+                    "type": "tool",
+                    "tool": {
+                        "type": "endCall"
+                    }
+                }
+            ],
+            "options": {
+                "timeoutSeconds": 30,
+                "triggerMaxCount": 1,
+                "triggerResetMode": "never"
+            }
+        }
+    ],
     "voicemailDetection": {
         "provider": "vapi",
         "type": "audio",
@@ -464,6 +529,9 @@ if patch_resp.status_code == 200:
     print(f"   transcriber:        {result.get('transcriber', {}).get('model')} {result.get('transcriber', {}).get('language')}")
     print(f"   stopSpeakingPlan:   {result.get('stopSpeakingPlan')}")
     print(f"   backgroundDenoise:  {result.get('backgroundDenoisingEnabled')}")
+    print(f"   silenceTimeout:     {result.get('silenceTimeoutSeconds')}s")
+    result_hooks = result.get('hooks', [])
+    print(f"   hooks count:        {len(result_hooks)} ({[h.get('name') for h in result_hooks]})")
 
     expected_tools = [
         "check_availability", "get_contact", "create_contact", "create_booking",
