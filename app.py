@@ -82,7 +82,7 @@ VERIFICANDO_PHRASES = [
     "déjame ver", "déjame verificar", "estoy revisando", "solo un segundo"
 ]
 
-SERVER_VERSION = "v17.28"  # AUDIT FIX: M5 slots cap, M6 VERIFICANDO_PHRASES constant
+SERVER_VERSION = "v17.33"  # AUDIT FIX: M5 slots cap, M6 VERIFICANDO_PHRASES constant, M7 lock TTL cleanup
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -398,14 +398,17 @@ def handle_create_contact(args):
 
     with phone_lock:
         # If a parallel call already completed for this phone, return cached result
-        # RISK FIX: Check TTL — discard cache entries older than 1 hour to prevent memory growth
+        # M7 FIX: Check TTL — discard cache entry AND lock when older than 1 hour to prevent memory leak
         import time as _time
         if phone_normalized in _create_contact_results:
             cached_result, cached_ts = _create_contact_results[phone_normalized]
             if _time.time() - cached_ts < CREATE_CONTACT_CACHE_TTL:
                 return {**cached_result, "message": cached_result.get("message", "") + " (cached)"}
             else:
+                # TTL expired: remove both result and lock to free memory
                 del _create_contact_results[phone_normalized]
+                with _create_contact_lock_meta:
+                    _create_contact_locks.pop(phone_normalized, None)
 
         # Check if contact already exists to avoid duplicates
         existing = handle_get_contact({"phone": phone_normalized, "callerPhone": caller_phone})
