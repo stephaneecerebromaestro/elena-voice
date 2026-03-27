@@ -102,7 +102,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.35"  # Full audit: B1-B10 fixes (docstring, BUG3 window, success_eval normalize, call_duration, analysisPlan preserve, BOOKING_TITLE, GHL retry, lock cleanup, schedule_callback race, EN verificando)
+SERVER_VERSION = "v17.36"  # Test fixes: T2(silencio), T8(endCall sin despedida), T10(horas callback), T11(proxima semana), T13/T14(idioma), GHL(success_eval+call_duration siempre escritos)
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -772,9 +772,18 @@ def handle_schedule_callback(args):
         hours = int(hours_raw)
     except (ValueError, TypeError):
         hours = 2
+    # T10 FIX: Snap to nearest valid value.
+    # The LLM may pass any integer (e.g. 3 for "after 3pm" when it's 1pm).
+    # Snap to nearest: <=3 → 2, 3-8 → 4, 8-66 → 12, >66 → 120
     if hours not in VALID_HOURS:
-        distances = {v: abs(v - hours) for v in VALID_HOURS}
-        hours = min(distances, key=distances.get)
+        if hours <= 3:
+            hours = 2
+        elif hours <= 8:
+            hours = 4
+        elif hours <= 66:
+            hours = 12
+        else:
+            hours = 120
 
     # Calculate callback time
     now_miami = datetime.now(TZ)
@@ -1272,12 +1281,17 @@ def _process_end_of_call(message):
             # B3 FIX: Normalize success_eval to lowercase string before writing.
             # Vapi can return "true"/"false" (str) or True/False (bool) depending on model.
             # str(True) = "True" (capital T) which is inconsistent. Always write lowercase.
-            if success_eval is not None:
-                _update_contact_custom_field(contact_id, "elena_success_eval", str(success_eval).lower())
+            # GHL-FIX: Always write the field so it never shows as empty in GHL.
+            # If Vapi didn't return a value (no analysisPlan result yet), write "pending".
+            _update_contact_custom_field(
+                contact_id,
+                "elena_success_eval",
+                str(success_eval).lower() if success_eval is not None else "pending"
+            )
             # B4 FIX: Write call duration in seconds to GHL for analytics.
             # Allows filtering real conversations from no-answers and measuring avg conversion time.
-            if call_duration_secs > 0:
-                _update_contact_custom_field(contact_id, "elena_call_duration", str(int(call_duration_secs)))
+            # GHL-FIX: Always write the field (even 0) so it's never empty/unrendered in GHL.
+            _update_contact_custom_field(contact_id, "elena_call_duration", str(int(call_duration_secs)))
             # Write structured data fields from analysisPlan
             if structured_data:
                 if structured_data.get("interest_level"):
