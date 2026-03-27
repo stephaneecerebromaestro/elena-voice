@@ -32,6 +32,10 @@ VERSION: v17.27 — All fixes applied:
           (calls where client spoke) are incremented on every end-of-call
   FIX P: end-of-call-report runs in background thread — worker returns 200 OK immediately,
           GHL writes happen async. Handles 100+ simultaneous calls without blocking.
+  AUDIT: M4 reschedule_appointment tool definition fixed (startTime→newStartTime in restore script)
+         M5 check_availability capped at 10 slots total (5 tuesday + 5 other) to reduce LLM context
+         M6 VERIFICANDO_PHRASES refactored as module-level constant (was duplicated 3x)
+         M8 check_availability tool description simplified (removed Gilberto reference)
 
 Handles tool calls from Vapi during live phone conversations:
 - check_availability: Check calendar availability (next 30 days)
@@ -72,7 +76,13 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.27"
+# M6 FIX: Single source of truth for verificando phrases (used in 3 outcome detection branches)
+VERIFICANDO_PHRASES = [
+    "verificando", "momentito", "un momento", "ya casi",
+    "déjame ver", "déjame verificar", "estoy revisando", "solo un segundo"
+]
+
+SERVER_VERSION = "v17.28"  # AUDIT FIX: M5 slots cap, M6 VERIFICANDO_PHRASES constant
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -257,7 +267,7 @@ def handle_check_availability(args):
         # Sort: Tuesdays first, then by date
         tuesday_slots = [s for s in slots if s["is_tuesday"]]
         other_slots = [s for s in slots if not s["is_tuesday"]]
-        ordered = tuesday_slots[:5] + other_slots[:10]
+        ordered = tuesday_slots[:5] + other_slots[:5]  # M5 FIX: max 10 slots total to reduce LLM context
         return {
             "available": True,
             "slots": ordered,
@@ -1011,8 +1021,7 @@ def _process_end_of_call(message):
                     last_bot_msg = _m.get("message", _m.get("content", "")) or ""
                 if _m.get("role") in ("tool_calls", "tool_call") or _m.get("type") in ("tool-call", "tool-call-result"):
                     has_any_tool_call = True
-            verificando_phrases = ["verificando", "momentito", "un momento", "ya casi", "déjame ver", "déjame verificar", "estoy revisando", "solo un segundo"]
-            elena_was_verifying = any(ph in last_bot_msg.lower() for ph in verificando_phrases)
+            elena_was_verifying = any(ph in last_bot_msg.lower() for ph in VERIFICANDO_PHRASES)
             if elena_was_verifying and not has_any_tool_call:
                 outcome = "error_tecnico"
                 outcome_label = "Error Técnico"
@@ -1036,8 +1045,7 @@ def _process_end_of_call(message):
                         _last_bot_e = _m.get("message", _m.get("content", "")) or ""
                     if _m.get("role") in ("tool_calls", "tool_call") or _m.get("type") in ("tool-call", "tool-call-result"):
                         _has_tool_e = True
-                _verificando_phrases = ["verificando", "momentito", "un momento", "ya casi", "déjame ver", "déjame verificar", "estoy revisando", "solo un segundo"]
-                _elena_verifying_e = any(ph in _last_bot_e.lower() for ph in _verificando_phrases)
+                _elena_verifying_e = any(ph in _last_bot_e.lower() for ph in VERIFICANDO_PHRASES)
                 if _elena_verifying_e and not _has_tool_e:
                     outcome = "error_tecnico"
                     outcome_label = "Error Técnico"
@@ -1079,8 +1087,7 @@ def _process_end_of_call(message):
                     _last_bot_d = _m.get("message", _m.get("content", "")) or ""
                 if _m.get("role") in ("tool_calls", "tool_call") or _m.get("type") in ("tool-call", "tool-call-result"):
                     _has_tool_d = True
-            _verificando_phrases_d = ["verificando", "momentito", "un momento", "ya casi", "déjame ver", "déjame verificar", "estoy revisando", "solo un segundo"]
-            _elena_verifying_d = any(ph in _last_bot_d.lower() for ph in _verificando_phrases_d)
+            _elena_verifying_d = any(ph in _last_bot_d.lower() for ph in VERIFICANDO_PHRASES)
             if (
                 ended_reason == "customer-ended-call"
                 and user_spoke

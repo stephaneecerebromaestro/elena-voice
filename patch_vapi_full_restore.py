@@ -48,7 +48,7 @@ tools = [
             "description": (
                 "Verifica los horarios disponibles en el calendario de Laser Place Miami para los próximos 30 días. "
                 "Llama esta función SIEMPRE antes de ofrecer horarios al cliente. "
-                "Los martes son los días de procedimiento (inyector Gilberto). "
+                "Los martes son los días prioritarios para procedimientos. "
                 "Devuelve una lista de slots con 'time' (ISO exacto) y 'label' (texto legible)."
             ),
             "parameters": {
@@ -166,19 +166,19 @@ tools = [
             "name": "reschedule_appointment",
             "description": (
                 "Reagenda una cita existente a un nuevo horario. "
-                "Requiere el appointmentId y el nuevo startTime exacto de check_availability."
+                "Requiere el appointmentId y el nuevo newStartTime exacto de check_availability."
             ),
             "parameters": {
                 "type": "object",
-                "required": ["appointmentId", "startTime"],
+                "required": ["appointmentId", "newStartTime"],
                 "properties": {
                     "appointmentId": {
                         "type": "string",
                         "description": "ID de la cita a reagendar"
                     },
-                    "startTime": {
+                    "newStartTime": {
                         "type": "string",
-                        "description": "Nuevo ISO timestamp exacto del slot (obtenido de check_availability)"
+                        "description": "Nuevo ISO timestamp exacto del slot (obtenido de check_availability). DEBE ser el campo 'time' del slot exactamente como aparece."
                     }
                 }
             }
