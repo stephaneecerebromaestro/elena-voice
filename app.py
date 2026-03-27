@@ -5,7 +5,7 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
-VERSION: v17.25 — All fixes applied:
+VERSION: v17.26 — All fixes applied:
   FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
   FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
   FIX C: Duplicate appointment detection before create_booking
@@ -32,7 +32,7 @@ VERSION: v17.25 — All fixes applied:
           (calls where client spoke) are incremented on every end-of-call
 
 Handles tool calls from Vapi during live phone conversations:
-- check_availability: Check calendar availability (next 14 days)
+- check_availability: Check calendar availability (next 30 days)
 - get_contact: Search contact by phone number (V2 query search)
 - create_contact: Create a new contact (V2, with duplicate check + phone/email validation)
 - create_booking: Create a new appointment (V2, with duplicate check)
@@ -70,7 +70,7 @@ DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "dom
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
-SERVER_VERSION = "v17.25"
+SERVER_VERSION = "v17.26"
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -191,7 +191,7 @@ def _format_local_time(iso_str):
 # ─── Tool Handlers ────────────────────────────────────────────────────────────
 
 def handle_check_availability(args):
-    """Check available appointment slots for the next 14 days using V2 API.
+    """Check available appointment slots for the next 30 days using V2 API.
     
     Returns a single flat list of slots with exact 'time' field and human 'label'.
     Tuesdays are prioritized (shown first).
@@ -201,7 +201,7 @@ def handle_check_availability(args):
     now = datetime.now(TZ)
     # RISK FIX: Add 2-hour buffer so Elena never offers a slot that's about to start
     start_ms = int((now + timedelta(hours=2)).timestamp() * 1000)
-    end_ms = int((now + timedelta(days=14)).timestamp() * 1000)
+    end_ms = int((now + timedelta(days=30)).timestamp() * 1000)
 
     result = ghl_v2_get(
         f"/calendars/{CALENDAR_ID}/free-slots",
