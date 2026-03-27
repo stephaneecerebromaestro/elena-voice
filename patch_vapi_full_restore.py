@@ -263,8 +263,8 @@ patch_body = {
     "model": {
         "provider": "openai",
         "model": "gpt-4o-mini",
-        "temperature": 0.45,
-        "maxTokens": 170,
+        "temperature": 0.4,
+        "maxTokens": 300,
         "messages": [
             {
                 "role": "system",
@@ -293,7 +293,7 @@ patch_body = {
         "language": "multi"
     },
     "stopSpeakingPlan": {
-        "numWords": 0,
+        "numWords": 2,
         "voiceSeconds": 0.5,
         "backoffSeconds": 1.5
     },
