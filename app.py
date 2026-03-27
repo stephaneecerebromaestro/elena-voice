@@ -5,7 +5,7 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
-VERSION: v17.39 — All fixes applied:
+VERSION: v17.40 — All fixes applied:
   FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
   FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
   FIX C: Duplicate appointment detection before create_booking
@@ -55,6 +55,19 @@ VERSION: v17.39 — All fixes applied:
   FIX-v17.39-B: system_prompt PASO 7 now has explicit PROHIBIDO ABSOLUTO rule — create_booking
                 must NEVER be called before client has chosen a specific slot from check_availability
                 (LLM was calling create_booking during qualification phase, not booking phase)
+  v17.40 FIXES:
+  FIX-v17.40-A: system_prompt v17.40 — 8 conversational improvements:
+                (1) Shorter firstMessage (20 words vs 32)
+                (2) Martes rejection: ask preferred day immediately, never repeat martes
+                (3) check_availability day validation: if slot day != requested day, say so
+                (4) Fill silence during check_availability (same as get_contact)
+                (5) 25-word limit in PASOS 5-7
+                (6) Skip SRA pitch if client already said they want to book
+                (7) Vary filler words, max 2x same word per call
+                (8) PREGUNTA 2 removed as martes-retry barrier
+  FIX-v17.40-B: elena_call_duration fallback — if call.startedAt/endedAt missing, calculate
+                duration from first/last message timestamps in artifact.messages
+                (fixes duration=0 on inbound calls where Vapi omits timestamps in webhook)
 
 Handles tool calls from Vapi during live phone conversations:
 - check_availability: Check calendar availability (next 30 days)
@@ -110,7 +123,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.39"  # CRITICAL FIXES: voicemail_by_elena now requires not user_spoke (prevents real calls from being classified as voicemail); system_prompt PASO 7 PROHIBIDO ABSOLUTO rule for create_booking sequence
+SERVER_VERSION = "v17.40"  # 8 conversational fixes (martes loop, check_availability day mismatch, silence fill, 25-word limit, muletillas) + call_duration fallback from message timestamps
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -921,17 +934,35 @@ def _process_end_of_call(message):
         call_id = call.get("id", "")
         customer_phone = call.get("customer", {}).get("number", "")
         # Calculate call duration in seconds from startedAt / endedAt timestamps
+        # FIX-v17.40-B: If call-level timestamps missing (common on inbound calls),
+        # fall back to first/last message timestamps from artifact.messages.
         call_duration_secs = 0
         try:
-            started_at = call.get("startedAt", "")
-            ended_at = call.get("endedAt", "")
+            started_at = call.get("startedAt", "") or message.get("startedAt", "")
+            ended_at = call.get("endedAt", "") or message.get("endedAt", "")
             if started_at and ended_at:
-                from datetime import timezone as _tz_mod
                 _started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
                 _ended = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
                 call_duration_secs = (_ended - _started).total_seconds()
         except Exception:
             call_duration_secs = 0
+        # FIX-v17.40-B fallback: derive duration from message timestamps if still 0
+        if call_duration_secs == 0 and messages_list:
+            try:
+                msg_times = []
+                for _m in messages_list:
+                    for _ts_key in ("time", "timestamp", "createdAt"):
+                        _ts = _m.get(_ts_key)
+                        if _ts:
+                            try:
+                                msg_times.append(datetime.fromisoformat(str(_ts).replace("Z", "+00:00")))
+                            except Exception:
+                                pass
+                            break
+                if len(msg_times) >= 2:
+                    call_duration_secs = (max(msg_times) - min(msg_times)).total_seconds()
+            except Exception:
+                pass
         # Detect inbound vs outbound
         raw_call_type = call.get("type", "")
         if "inbound" in raw_call_type.lower():
