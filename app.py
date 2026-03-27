@@ -5,7 +5,7 @@ Standalone Flask server for deployment on Render.
 Uses GHL V2 API (services.leadconnectorhq.com) with Private Integration Token (PIT).
 ALL endpoints use V2 API — V1 is NOT used anywhere.
 
-VERSION: v17.35 — All fixes applied:
+VERSION: v17.39 — All fixes applied:
   FIX A: get_contact uses caller's real phone (from call.customer.number) as fallback
   FIX B: Phone number validation — rejects obviously fake numbers (< 7 digits after cleaning)
   FIX C: Duplicate appointment detection before create_booking
@@ -47,6 +47,14 @@ VERSION: v17.35 — All fixes applied:
   B8: _create_contact_locks cleaned up with TTL alongside _create_contact_results
   B9: schedule_callback no longer writes tag/outcome fields — deferred to end-of-call
   B10: VERIFICANDO_PHRASES extended with English equivalents for bilingual calls
+  v17.39 CRITICAL FIXES:
+  FIX-v17.39-A: voicemail_by_elena now requires `not user_spoke` — prevents real conversations
+                from being classified as voicemail when Vapi omits startedAt/endedAt timestamps
+                (duration_reliable=False was making not duration_reliable=True, activating
+                voicemail_by_elena even for 3-minute real conversations with assistant-ended-call)
+  FIX-v17.39-B: system_prompt PASO 7 now has explicit PROHIBIDO ABSOLUTO rule — create_booking
+                must NEVER be called before client has chosen a specific slot from check_availability
+                (LLM was calling create_booking during qualification phase, not booking phase)
 
 Handles tool calls from Vapi during live phone conversations:
 - check_availability: Check calendar availability (next 30 days)
@@ -102,7 +110,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.38"  # CRITICAL FIX: has_any_tool_call UnboundLocalError crashed end-of-call handler — all GHL fields were empty after every call that didn't hit silence-timed-out path
+SERVER_VERSION = "v17.39"  # CRITICAL FIXES: voicemail_by_elena now requires not user_spoke (prevents real calls from being classified as voicemail); system_prompt PASO 7 PROHIBIDO ABSOLUTO rule for create_booking sequence
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -1020,16 +1028,20 @@ def _process_end_of_call(message):
 
         # Voicemail / no-answer detection: Elena ended the call AND duration < 45s.
         # We use 45s because voicemail greetings + Elena's goodbye can last up to ~40s.
-        # We do NOT rely on user_spoke here because Vapi transcribes voicemail audio as role=user.
-        # FIX1: duration_reliable is no longer required — Vapi sometimes omits startedAt/endedAt.
-        # When timestamps are missing, we trust endedReason alone for voicemail detection.
-        # If duration IS available, we still enforce the 45s cap as a safety check.
+        # CRITICAL FIX v17.39: voicemail_by_elena MUST be False if user_spoke=True.
+        # A voicemail system does not have a real conversation. If the user spoke, it's a real call.
+        # Previously: when Vapi omitted startedAt/endedAt (duration=0), duration_reliable=False,
+        # which made (not duration_reliable) = True, activating voicemail_by_elena even for
+        # real conversations that lasted several minutes. This caused outcome=no_contesto
+        # for real calls where Elena ended the call (assistant-ended-call) after a full conversation.
+        # Fix: add `and not user_spoke` — if the user spoke, it's never a voicemail.
         voicemail_by_elena = (
             ended_reason in (
                 "assistant-ended-call",
                 "assistant-ended-call-after-message-spoken",
                 "assistant-said-end-call-phrase"
             )
+            and not user_spoke  # CRITICAL: real humans speak; voicemails don't
             and (not duration_reliable or call_duration_secs < 45)
         )
 
