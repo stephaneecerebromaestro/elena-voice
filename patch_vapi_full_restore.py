@@ -297,7 +297,18 @@ patch_body = {
         "voiceSeconds": 0.5,
         "backoffSeconds": 1.5
     },
-    "backgroundDenoisingEnabled": True
+    "backgroundDenoisingEnabled": True,
+    "voicemailDetection": {
+        "provider": "vapi",
+        "type": "audio",
+        "beepMaxAwaitSeconds": 25,
+        "backoffPlan": {
+            "startAtSeconds": 2,
+            "frequencySeconds": 2.5,
+            "maxRetries": 6
+        }
+    },
+    "voicemailMessage": ""
 }
 
 print(f"\nApplying full PATCH with {len(tools)} tools...")
