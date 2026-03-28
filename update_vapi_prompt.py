@@ -6,10 +6,11 @@ ARCHITECTURE (post-patch v17.46):
     their OAuth session (GoHighLevelMCPCredential) is broken/expired. When present, the LLM
     called get_free_slots (GHL-native) instead of check_availability (our server), causing
     "GoHighLevelMCPCredential not found" errors on every call.
-  - model.tools = 5 custom server-url tools (get_appointment_by_contact, reschedule_appointment,
-    cancel_appointment, get_current_time, schedule_callback) — these work via our Render server.
-  - check_availability, get_contact, create_contact, create_booking are defined in the prompt
-    and handled by our server URL (serverUrl field on the assistant).
+  - model.tools = 9 custom server-url tools:
+      check_availability, get_contact, create_contact, create_booking (CORE — added as inline tools)
+      get_appointment_by_contact, reschedule_appointment, cancel_appointment,
+      get_current_time, schedule_callback
+    ALL tools route through our Render server URL.
 
 CRITICAL: Never add toolIds back without verifying the GHL OAuth session is active.
 """
