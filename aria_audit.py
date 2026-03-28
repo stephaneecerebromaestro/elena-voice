@@ -741,31 +741,70 @@ Para ver el detalle completo, consulta el dashboard de Supabase.
 
 def send_email_report(report_text: str, audit_date: str, metrics: dict):
     """
-    Enviar reporte por email usando SMTP.
-    Usa Gmail SMTP con las credenciales del usuario.
+    Enviar reporte diario por email usando Gmail SMTP con App Password.
+    Variables de entorno requeridas:
+      - GMAIL_FROM: dirección de Gmail remitente (ej: vitusmediard@gmail.com)
+      - GMAIL_APP_PASSWORD: App Password de 16 caracteres generada en myaccount.google.com/apppasswords
+      - ADMIN_EMAIL: destinatario del reporte
     """
+    # Siempre loggear el reporte en los logs de Render
+    log.info("=" * 60)
+    log.info("REPORTE DIARIO ARIA")
+    log.info("=" * 60)
+    log.info(report_text)
+    log.info("=" * 60)
+
+    gmail_from = os.getenv("GMAIL_FROM", "")
+    gmail_app_password = os.getenv("GMAIL_APP_PASSWORD", "")
+
+    if not gmail_from or not gmail_app_password:
+        log.warning("Email delivery skipped: GMAIL_FROM o GMAIL_APP_PASSWORD no configurados")
+        return False
+
     try:
-        # Para Gmail, necesitamos una App Password
-        # Por ahora, loggear el reporte y marcarlo como enviado
-        log.info("=" * 60)
-        log.info("REPORTE DIARIO ARIA")
-        log.info("=" * 60)
-        log.info(report_text)
-        log.info("=" * 60)
-        
-        # TODO: Implementar envío real cuando se configure Gmail App Password
-        # msg = MIMEMultipart()
-        # msg['From'] = ADMIN_EMAIL
-        # msg['To'] = ADMIN_EMAIL
-        # msg['Subject'] = f"ARIA — Reporte Elena {audit_date}"
-        # msg.attach(MIMEText(report_text, 'plain', 'utf-8'))
-        # with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-        #     server.login(ADMIN_EMAIL, GMAIL_APP_PASSWORD)
-        #     server.send_message(msg)
-        
-        log.info(f"Report logged (email delivery pending Gmail App Password configuration)")
+        total        = metrics.get("total_audited", 0)
+        agendo       = metrics.get("calls_agendo", 0)
+        conversion   = metrics.get("conversion_rate", 0) * 100
+        avg_playbook = metrics.get("avg_playbook_adherence")
+        pb_str       = f"{avg_playbook*100:.0f}%" if avg_playbook else "N/A"
+
+        # ── Asunto dinámico con KPIs clave ──────────────────────────────
+        subject = (
+            f"ARIA | Elena {audit_date} — "
+            f"{total} llamadas | {agendo} citas | "
+            f"Conversión {conversion:.1f}% | Playbook {pb_str}"
+        )
+
+        # ── Cuerpo HTML ─────────────────────────────────────────────────
+        html_body = f"""\
+<html><body style="font-family:monospace;background:#0f0f0f;color:#e0e0e0;padding:24px">
+<h2 style="color:#00d4aa">ARIA — Reporte Diario de Elena</h2>
+<p style="color:#888">Fecha: {audit_date}</p>
+<pre style="background:#1a1a1a;padding:16px;border-radius:8px;font-size:13px;line-height:1.6">{report_text}</pre>
+<hr style="border-color:#333">
+<p style="color:#555;font-size:11px">Generado automáticamente por ARIA v{ARIA_VERSION}.<br>
+Para ver el detalle completo, consulta el <a href="https://supabase.com/dashboard/project/subzlfzuzcyqyfrzszjb/editor" style="color:#00d4aa">dashboard de Supabase</a>.</p>
+</body></html>"""
+
+        # ── Construir mensaje MIME ───────────────────────────────────────
+        msg = MIMEMultipart("alternative")
+        msg["From"]    = f"ARIA — Elena Monitor <{gmail_from}>"
+        msg["To"]      = ADMIN_EMAIL
+        msg["Subject"] = subject
+        msg.attach(MIMEText(report_text, "plain",  "utf-8"))
+        msg.attach(MIMEText(html_body,   "html",   "utf-8"))
+
+        # ── Enviar via Gmail SMTP SSL ────────────────────────────────────
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(gmail_from, gmail_app_password)
+            server.send_message(msg)
+
+        log.info(f"Email report sent to {ADMIN_EMAIL} — subject: {subject}")
         return True
-        
+
+    except smtplib.SMTPAuthenticationError as e:
+        log.error(f"Gmail auth error (verifica GMAIL_APP_PASSWORD): {e}")
+        return False
     except Exception as e:
         log.error(f"Email send error: {e}")
         return False
