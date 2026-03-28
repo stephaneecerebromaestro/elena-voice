@@ -123,7 +123,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.44"  # FIX: shallow_call extended to assistant-ended-call & incomplete phrase prompt fix
+SERVER_VERSION = "v17.45"  # FIX G: interruption never triggers endCall; FIX H: 'quiero andar' = 'quiero agendar' (STT correction)
                            # FIX B: reschedule_appointment success = outcome agendo (was no_agendo)
                            # FIX C/D/E: prompt — skip pitch if client already wants to book, no re-call check_availability, endCall post-despedida
 
