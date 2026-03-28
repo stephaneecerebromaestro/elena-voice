@@ -123,7 +123,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.43"  # FIX A: check_availability 2-slots-per-day algo (shows all available days, not just earliest 2)
+SERVER_VERSION = "v17.44"  # FIX: shallow_call extended to assistant-ended-call & incomplete phrase prompt fix
                            # FIX B: reschedule_appointment success = outcome agendo (was no_agendo)
                            # FIX C/D/E: prompt — skip pitch if client already wants to book, no re-call check_availability, endCall post-despedida
 
@@ -1141,11 +1141,23 @@ def _process_end_of_call(message):
         )
         _user_word_count = sum(len(str(m.get("message", m.get("content", ""))).split()) for m in messages_list if m.get("role") in ("user", "human"))
         _user_msg_count = len([m for m in messages_list if m.get("role") in ("user", "human")])
+        # FIX v17.44: Extended shallow_call to also cover assistant-ended-call variants.
+        # Bug: When user said "quiero agendar" and Elena misinterpreted the incomplete phrase
+        # as a goodbye signal, the call ended via assistant-ended-call in ~26s with no tool calls.
+        # The old check only covered customer-ended-call, so this scenario fell through to no_agendo.
+        # Fix: Include all assistant-ended-call variants so any <45s call with no tool calls and
+        # minimal user speech is classified as no_contesto (shallow), not no_agendo.
+        _SHALLOW_ENDED_REASONS = (
+            "customer-ended-call",
+            "assistant-ended-call",
+            "assistant-ended-call-after-message-spoken",
+            "assistant-said-end-call-phrase",
+        )
         shallow_call = (
             not short_call  # not already caught by short_call
             and duration_reliable
             and call_duration_secs < 45
-            and ended_reason == "customer-ended-call"
+            and ended_reason in _SHALLOW_ENDED_REASONS
             and not _has_any_tool_f1
             and _user_msg_count <= 2
             and _user_word_count <= 12  # FIX B3: raised from 8 to 12 to cover background noise transcribed as words
