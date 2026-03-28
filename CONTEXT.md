@@ -1,6 +1,6 @@
 # Elena AI — Contexto del Sistema (Documento Vivo)
 
-> **Última actualización:** v17.42.1 — 28 marzo 2026  
+> **Última actualización:** v17.44 — 28 marzo 2026  
 > **Propósito:** Este archivo es la fuente de verdad del sistema. Leerlo al inicio de cada sesión para retomar sin perder contexto.
 
 ---
@@ -157,6 +157,14 @@ Todos deben usar el prefijo `contact.`:
 ---
 
 ## Historial de versiones y fixes críticos
+
+### v17.44 (28/03/2026)
+- **Fix shallow_call:** Extendido para cubrir `assistant-ended-call` (y variantes) en llamadas <45s sin tool calls. Evita que llamadas cortas cortadas por Elena se marquen como `agendo`.
+- **Fix F (Frases incompletas):** Regla en el prompt para que Elena NUNCA ejecute `endCall` si el cliente dice una frase incompleta o cortada (ej: "yo quiero agendar...").
+
+### v17.43 (28/03/2026)
+- **Fix B1-B6:** Correcciones adicionales en el outcome classifier, incluyendo falsos positivos de `agendo` cuando `startedAt=None`, detección de IVR, y ajustes en el umbral de `shallow_call`.
+- **Update:** Número de teléfono actualizado a 786-953-2577 para escenarios de disclosure de IA.
 
 ### v17.42.1 (28/03/2026)
 - **Fix G:** Elena nunca se rinde buscando horario por disponibilidad. Solo cede ante rechazo explícito del servicio ("no quiero", "no me interesa", "no me llames más"). Elimina la REGLA DE TRES INTENTOS que hacía que Elena ofreciera callback después de 3 rechazos de horario.
