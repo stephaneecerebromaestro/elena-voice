@@ -123,7 +123,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.42"  # FIX A: check_availability 2-slots-per-day algo (shows all available days, not just earliest 2)
+SERVER_VERSION = "v17.43"  # FIX A: check_availability 2-slots-per-day algo (shows all available days, not just earliest 2)
                            # FIX B: reschedule_appointment success = outcome agendo (was no_agendo)
                            # FIX C/D/E: prompt — skip pitch if client already wants to book, no re-call check_availability, endCall post-despedida
 
@@ -1096,6 +1096,15 @@ def _process_end_of_call(message):
             "ha llamado a", "usted ha llamado",
             "el buzón de voz", "el correo de voz",
             "deje su nombre", "deje sus datos",
+            # IVR / hold system phrases (not voicemail but also not a real human)
+            "please stay on the line", "stay on the line", "please hold",
+            "your call is important", "all agents are", "please wait",
+            "thank you for calling", "thank you for holding", "thanks for calling",
+            "thanks for holding", "thanks. please", "please continue to hold",
+            "estimated wait time", "hold time", "next available",
+            "press 1 for", "press 2 for", "press 3 for",
+            "para español", "for english", "for spanish",
+            "dial extension", "enter your", "if you know your party",
         ]
         user_msgs_content = [
             str(m.get("message", m.get("content", ""))).lower()
@@ -1139,7 +1148,7 @@ def _process_end_of_call(message):
             and ended_reason == "customer-ended-call"
             and not _has_any_tool_f1
             and _user_msg_count <= 2
-            and _user_word_count <= 8
+            and _user_word_count <= 12  # FIX B3: raised from 8 to 12 to cover background noise transcribed as words
         )
 
         # Voicemail / no-answer detection: Elena ended the call AND duration < 45s.
@@ -1374,7 +1383,16 @@ def _process_end_of_call(message):
         # - Contact had a prior call that booked an appointment <10 minutes earlier
         # - New call arrives, BUG3-v2 sees the recent appointment and marks this call as agendo
         # Fix: appointment.createdAt must be AFTER call.startedAt (not just within 10 min of now).
-        if not agendo and contact_id:
+        #
+        # FIX B1: Skip BUG3-v3 entirely for calls that never connected to a real human.
+        # customer-did-not-answer / no-answer / voicemail / customer-busy = no conversation happened.
+        # These calls can NEVER produce a new appointment, so checking GHL is both wrong and
+        # dangerous (it picks up appointments from prior calls on the same contact).
+        _skip_bug3 = ended_reason in (
+            "customer-did-not-answer", "no-answer", "voicemail",
+            "customer-busy", "twilio-failed-to-connect-call",
+        ) or (outcome == "no_contesto" and not agendo)
+        if not agendo and contact_id and not _skip_bug3:
             try:
                 appt_check = handle_get_appointment_by_contact({"contactId": contact_id})
                 if appt_check.get("found"):
