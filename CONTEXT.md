@@ -1,19 +1,21 @@
-# Elena AI — Contexto del Sistema (Documento Vivo)
+# Elena AI + ARIA — Contexto del Sistema (Documento Vivo)
 
-> **Última actualización:** v17.44 — 28 marzo 2026  
+> **Última actualización:** v17.46 + ARIA v1.0.0 — 28 marzo 2026  
 > **Propósito:** Este archivo es la fuente de verdad del sistema. Leerlo al inicio de cada sesión para retomar sin perder contexto.
 
 ---
 
 ## Arquitectura general
 
-El sistema tiene tres capas que trabajan juntas:
+El sistema tiene cuatro capas que trabajan juntas:
 
 **Capa 1 — Vapi (voz + LLM):** Ejecuta las llamadas telefónicas. Usa el `system_prompt.txt` para guiar el comportamiento conversacional de Elena. Llama herramientas (tools) via webhooks al servidor de Render cuando necesita datos externos (calendario, contacto, cita).
 
 **Capa 2 — Render (backend Flask):** Servidor Python en `app.py`. Recibe los tool calls de Vapi, consulta la API de GHL, y al final de cada llamada clasifica el outcome y escribe los campos en el contacto de GHL.
 
 **Capa 3 — GHL (CRM + workflows):** Almacena los contactos, el calendario de citas, y ejecuta los workflows de automatización según el outcome de cada llamada.
+
+**Capa 4 — ARIA (auditoría autónoma):** Script independiente `aria_audit.py`. Corre como cron job separado. Lee datos de Vapi/GHL, audita con Claude Sonnet 4.5, detecta errores y discrepancias, guarda en Supabase, y envía reportes diarios. **NUNCA modifica app.py ni Elena.**
 
 ---
 
@@ -28,19 +30,25 @@ El sistema tiene tres capas que trabajan juntas:
 | Location GHL | ID: `hzRj7DV9erP8tnPiTv7D` |
 | Zona horaria | `America/New_York` (EST/EDT) |
 | Booking title | `Evaluación Botox - Laser Place Miami` |
+| Supabase | `https://subzlfzuzcyqyfrzszjb.supabase.co` |
 
 ---
 
 ## Variables de entorno en Render
 
-| Variable | Descripción |
-|----------|-------------|
-| `GHL_PIT` | Private Integration Token de GHL (API v2) |
-| `GHL_CALENDAR_ID` | ID del calendario de citas |
-| `GHL_LOCATION_ID` | ID de la location en GHL |
-| `VAPI_API_KEY` | API key de Vapi |
-| `VAPI_ASSISTANT_ID` | ID del asistente de Vapi |
-| `BOOKING_TITLE` | Título de la cita (configurable) |
+| Variable | Descripción | Valor |
+|----------|-------------|-------|
+| `GHL_PIT` | Private Integration Token de GHL (API v2) | Ver Render env vars |
+| `GHL_CALENDAR_ID` | ID del calendario de citas | `hYHvVwjKPykvcPkrsQWT` |
+| `GHL_LOCATION_ID` | ID de la location en GHL | `hzRj7DV9erP8tnPiTv7D` |
+| `VAPI_API_KEY` | API key de Vapi | Ver Render env vars |
+| `VAPI_ASSISTANT_ID` | ID del asistente de Vapi | `1631c7cf-2914-45f9-bf82-6635cdf00aba` |
+| `BOOKING_TITLE` | Título de la cita (configurable) | `Evaluación Botox - Laser Place Miami` |
+| `ANTHROPIC_API_KEY` | API key de Anthropic (para ARIA) | Ver Render env vars |
+| `SUPABASE_URL` | URL del proyecto Supabase | `https://subzlfzuzcyqyfrzszjb.supabase.co` |
+| `SUPABASE_SERVICE_KEY` | Service Role Key de Supabase | **PENDIENTE — obtener del dashboard** |
+
+> **NOTA:** Las variables de ARIA (ANTHROPIC_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY) deben agregarse en Render → Environment → Add Variable.
 
 ---
 
@@ -156,7 +164,110 @@ Todos deben usar el prefijo `contact.`:
 
 ---
 
+## ARIA — Sistema de Auditoría Inteligente
+
+### Arquitectura
+
+```
+Vapi API → aria_audit.py → Claude Sonnet 4.5 → Supabase
+                        ↓
+                   GHL API (correcciones)
+                        ↓
+                   Email (reportes diarios)
+```
+
+### Archivos de ARIA
+
+| Archivo | Descripción |
+|---------|-------------|
+| `aria_audit.py` | Script principal de auditoría |
+| `aria_schema.sql` | Schema SQL para Supabase (ejecutar una vez en el SQL Editor) |
+
+### Tablas en Supabase
+
+| Tabla | Descripción |
+|-------|-------------|
+| `call_audits` | Registro maestro de cada llamada auditada |
+| `feedback_log` | Feedback de Juan (✅/❌) sobre correcciones de ARIA |
+| `daily_metrics` | Métricas agregadas por día |
+| `aria_corrections` | Log de correcciones propuestas/aplicadas en GHL |
+| `aria_config` | Configuración dinámica de ARIA |
+
+### Outcomes que ARIA puede detectar
+
+| Outcome | Criterio |
+|---------|---------|
+| `agendo` | create_booking o reschedule_appointment exitoso en tool calls |
+| `no_contesto` | Duración <20s, buzón de voz, IVR, o cliente no habló |
+| `no_agendo` | Conversación real sin cita agendada |
+| `llamar_luego` | schedule_callback exitoso |
+| `no_interesado` | Rechazo explícito del servicio |
+| `error_tecnico` | Error técnico que impidió la llamada |
+
+### Errores que ARIA detecta en Elena
+
+| Error | Descripción |
+|-------|-------------|
+| `confusion_created` | Elena dio información contradictoria al cliente |
+| `repeated_availability_check` | Llamó a check_availability más de 2 veces innecesariamente |
+| `wrong_info` | Dio información incorrecta (disponibilidad, precio, etc.) |
+| `missed_close` | Tenía oportunidad de agendar pero no la aprovechó |
+| `premature_endcall` | Terminó la llamada cuando el cliente aún quería hablar |
+| `playbook_violation` | No siguió el playbook (ej: ofreció precio antes de la evaluación) |
+| `language_switch` | Cambio de idioma no manejado correctamente |
+
+### Cómo ejecutar ARIA
+
+```bash
+# Modo piloto (sin guardar en Supabase) — para testing
+python3.11 aria_audit.py pilot 3
+
+# Modo auditoría normal (últimas 25h)
+python3.11 aria_audit.py audit
+
+# Modo auditoría con rango personalizado
+python3.11 aria_audit.py audit 48
+
+# Dry-run (audita pero no guarda)
+python3.11 aria_audit.py dry-run
+```
+
+### Configuración del cron job en Render
+
+Para ejecutar ARIA diariamente a las 7am EST (12:00 UTC), agregar en Render:
+- **Cron Job:** `0 12 * * *`
+- **Comando:** `python3.11 aria_audit.py audit`
+
+### Pendientes de ARIA
+
+| Tarea | Estado |
+|-------|--------|
+| Obtener SUPABASE_SERVICE_KEY del dashboard | **PENDIENTE** |
+| Ejecutar aria_schema.sql en Supabase SQL Editor | **PENDIENTE** |
+| Agregar variables de entorno en Render | **PENDIENTE** |
+| Configurar Gmail App Password para envío de emails | **PENDIENTE** |
+| Configurar cron job en Render | **PENDIENTE** |
+| Implementar loop de feedback RLHF (WhatsApp buttons) | Fase 2 |
+
+### Modelo LLM de ARIA
+
+- **Modelo actual:** `claude-sonnet-4-5-20250929` (Claude Sonnet 4.5)
+- **Razón:** Es el mejor modelo disponible en la cuenta de Anthropic del usuario
+- **Nota:** `claude-3-5-sonnet-20241022` no está disponible en esta cuenta (da 404)
+
+---
+
 ## Historial de versiones y fixes críticos
+
+### ARIA v1.0.0 (28/03/2026)
+- Primer release del sistema de auditoría
+- Auditoría con Claude Sonnet 4.5
+- Detección de 7 tipos de errores de Elena
+- Schema SQL completo en Supabase
+- Modo piloto funcional y probado con llamadas reales
+
+### v17.46 (28/03/2026)
+- **Fix:** `check_availability`, `get_contact`, `create_contact`, `create_booking` como inline model.tools — LLM ahora tiene los 9 tools via server URL
 
 ### v17.44 (28/03/2026)
 - **Fix shallow_call:** Extendido para cubrir `assistant-ended-call` (y variantes) en llamadas <45s sin tool calls. Evita que llamadas cortas cortadas por Elena se marquen como `agendo`.
@@ -185,13 +296,6 @@ Todos deben usar el prefijo `contact.`:
 ### v17.40.1 (28/03/2026)
 - **Fix duration:** `elena_call_duration` con 3 niveles de fallback. Nunca escribe 0 si hubo conversación.
 
-### v17.40 (28/03/2026)
-- 8 mejoras conversacionales en el prompt: firstMessage más corto, lógica de martes, validación de día en slots, silencio de check_availability, límite de 25 palabras en PASOS 5-7, skip pitch si cliente ya quiere agendar, muletillas variadas, eliminación de PREGUNTA 2 como barrera.
-
-### v17.39 (27/03/2026)
-- **Fix voicemail:** `voicemail_by_elena` requiere `not user_spoke`. Resuelve clasificación incorrecta de llamadas reales como `no_contesto`.
-- **Fix PASO 7:** Regla PROHIBIDO ABSOLUTO — `create_booking` solo después de que el cliente eligió un slot específico de `check_availability`.
-
 ---
 
 ## Problemas conocidos / pendientes
@@ -200,10 +304,11 @@ Todos deben usar el prefijo `contact.`:
 |----------|--------|
 | Fix C (skip pitch) no se activó en llamada de Laury Matos | Pendiente verificar en llamada real post-v17.41 |
 | `elena_success_eval=false` en llamadas sin cita | No es bug — es el comportamiento correcto del analysisPlan |
+| SUPABASE_SERVICE_KEY pendiente de configurar | ARIA funciona en modo piloto; Supabase se activa cuando se provea la key |
 
 ---
 
-## Cómo hacer deploy
+## Cómo hacer deploy de Elena
 
 ```bash
 # 1. Modificar app.py y/o system_prompt.txt
@@ -214,19 +319,37 @@ cd /home/ubuntu/elena-vapi-server && python3.11 -m py_compile app.py
 git add app.py system_prompt.txt && git commit -m "vX.XX: descripción" && git push
 
 # 4. Sincronizar prompt a Vapi (si se modificó system_prompt.txt)
-python3.11 << 'EOF'
-import requests, json, os
-VAPI_KEY = "VAPI_KEY_REDACTED_ROTATED_2026_04_24"
-ASSISTANT_ID = "1631c7cf-2914-45f9-bf82-6635cdf00aba"
-prompt = open("/home/ubuntu/elena-vapi-server/system_prompt.txt").read()
-r = requests.patch(
-    f"https://api.vapi.ai/assistant/{ASSISTANT_ID}",
-    headers={"Authorization": f"Bearer {VAPI_KEY}", "Content-Type": "application/json"},
-    json={"model": {"provider": "openai", "model": "gpt-4o", "messages": [{"role": "system", "content": prompt}]}}
-)
-print(r.status_code, r.json().get("id"))
-EOF
+python3.11 update_vapi_prompt.py
 
 # 5. Verificar deploy
 curl -s https://elena-pdem.onrender.com/health | python3.11 -c "import sys,json; d=json.load(sys.stdin); print(d.get('version'))"
+```
+
+## Cómo activar ARIA completamente
+
+```bash
+# 1. Obtener SUPABASE_SERVICE_KEY del dashboard:
+#    https://supabase.com/dashboard/project/subzlfzuzcyqyfrzszjb/settings/api-keys
+#    → Secret keys → Reveal
+
+# 2. Ejecutar el schema SQL en Supabase:
+#    https://supabase.com/dashboard/project/subzlfzuzcyqyfrzszjb/sql/new
+#    → Pegar el contenido de aria_schema.sql → Run
+
+# 3. Agregar variables de entorno en Render:
+#    ANTHROPIC_API_KEY = sk-ant-api03-...
+#    SUPABASE_URL = https://subzlfzuzcyqyfrzszjb.supabase.co
+#    SUPABASE_SERVICE_KEY = eyJ... (el service_role key)
+
+# 4. Hacer push del código a GitHub (Render auto-deploya)
+git add aria_audit.py aria_schema.sql CONTEXT.md
+git commit -m "feat: ARIA v1.0.0 — sistema de auditoría automática"
+git push
+
+# 5. Configurar cron job en Render:
+#    → New Cron Job → Command: python3.11 aria_audit.py audit
+#    → Schedule: 0 12 * * * (7am EST = 12:00 UTC)
+
+# 6. Probar manualmente:
+#    python3.11 aria_audit.py pilot 5
 ```
