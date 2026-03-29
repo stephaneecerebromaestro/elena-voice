@@ -2,3 +2,4 @@ flask==3.0.*
 requests==2.*
 gunicorn==21.*
 pytz==2024.*
+anthropic>=0.40.0
