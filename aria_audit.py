@@ -353,6 +353,40 @@ def get_already_audited_ids() -> set:
 # GHL API
 # ============================================================
 
+def get_ghl_contact_id_by_phone(phone: str) -> Optional[str]:
+    """
+    Buscar un contacto en GHL por número de teléfono.
+    Retorna el contactId si lo encuentra, None si no.
+    Usado como fallback cuando Elena no llama a get_contact durante la llamada.
+    """
+    if not phone:
+        return None
+    try:
+        r = requests.post(
+            "https://services.leadconnectorhq.com/contacts/search",
+            headers={
+                "Authorization": f"Bearer {GHL_PIT}",
+                "Version": "2021-07-28",
+                "Content-Type": "application/json"
+            },
+            json={
+                "locationId": GHL_LOCATION_ID,
+                "filters": [{"field": "phone", "operator": "eq", "value": phone}],
+                "pageLimit": 1
+            },
+            timeout=10
+        )
+        if r.status_code == 200:
+            contacts = r.json().get("contacts", [])
+            if contacts:
+                return contacts[0].get("id")
+        else:
+            log.warning(f"GHL phone search error [{phone}]: {r.status_code}")
+    except Exception as e:
+        log.warning(f"GHL phone search exception [{phone}]: {e}")
+    return None
+
+
 def get_ghl_contact_fields(contact_id: str) -> dict:
     """
     Obtener los campos de Elena del contacto en GHL.
@@ -375,22 +409,28 @@ def get_ghl_contact_fields(contact_id: str) -> dict:
     custom_fields = contact.get("customFields", [])
     
     # Extraer campos de Elena
+    # NOTA: La API de GHL no devuelve fieldKey en customFields, solo id y value.
+    # Usamos el ID del campo directamente (mapeado desde la location).
+    # IDs obtenidos de GET /locations/{locationId}/customFields
     elena_fields = {}
-    field_map = {
-        "elena_last_outcome": "elena_last_outcome",
-        "elena_call_duration": "elena_call_duration",
-        "elena_ended_reason": "elena_ended_reason",
-        "elena_success_eval": "elena_success_eval",
-        "elena_summary": "elena_summary",
-        "elena_appointment_id": "elena_appointment_id",
-        "elena_appointment_date": "elena_appointment_date",
+    ELENA_FIELD_IDS = {
+        "ibrHOJBAON7gQpj9rT89": "elena_last_outcome",   # elena_last_outcome (raw: agendo/no_agendo/etc)
+        "oAs5Oga4qS7lGo0Kgt0S": "elena_call_duration",  # elena_call_duration
+        "z5E3DfytuVmJBy9QXCvD": "elena_ended_reason",   # Elena Ended Reason
+        "KbBNpjKFL3SErALyTFcM": "elena_success_eval",   # elena_success_eval
+        "cCd44bHm90pAn5q9fmux": "elena_summary",        # Elena Summary
+        "Bb3FVz9jnWIbZkbjCDSw": "elena_vapi_call_id",   # vapi call id
+        "eQJVvxl128xm1P7LEo3v": "elena_outcome_display", # Elena Outcome (display: Agendó/No Contestó/etc)
+        "PudkAK9CqOKbDefRrCEF": "elena_stage",          # Elena Stage
+        "s8beSvYXNMtzJRFENIUH": "elena_total_calls",    # elena_total_calls
+        "X0eYYBR1XN3r4Hhwa4aO": "elena_conversations",  # elena_conversations
     }
     
     for field in custom_fields:
-        field_key = field.get("fieldKey", "")
-        for ghl_key, aria_key in field_map.items():
-            if ghl_key in field_key:
-                elena_fields[aria_key] = field.get("value")
+        field_id = field.get("id", "")
+        if field_id in ELENA_FIELD_IDS:
+            aria_key = ELENA_FIELD_IDS[field_id]
+            elena_fields[aria_key] = field.get("value")
     
     return elena_fields
 
@@ -648,6 +688,14 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
                     break
             except Exception:
                 pass
+    
+    # FALLBACK: Si no encontramos el contactId en los mensajes, buscar por teléfono en GHL
+    # Esto cubre el 92% de llamadas donde Elena no llega a llamar get_contact
+    # (llamadas cortas: no_contesto, customer-did-not-answer, etc.)
+    if not ghl_contact_id and phone:
+        ghl_contact_id = get_ghl_contact_id_by_phone(phone)
+        if ghl_contact_id:
+            log.info(f"Contact found by phone fallback [{call_id}]: {ghl_contact_id}")
     
     # Si tenemos el contactId, obtener los campos de Elena
     ghl_fields = {}
