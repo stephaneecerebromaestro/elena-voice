@@ -1,6 +1,6 @@
 # Elena AI + ARIA — Contexto del Sistema (Documento Vivo)
 
-> **Última actualización:** v17.46 + ARIA v1.0.0 — 28 marzo 2026  
+> **Última actualización:** v17.46 + ARIA v1.1.0 — 29 marzo 2026  
 > **Propósito:** Este archivo es la fuente de verdad del sistema. Leerlo al inicio de cada sesión para retomar sin perder contexto.
 
 ---
@@ -15,7 +15,7 @@ El sistema tiene cuatro capas que trabajan juntas:
 
 **Capa 3 — GHL (CRM + workflows):** Almacena los contactos, el calendario de citas, y ejecuta los workflows de automatización según el outcome de cada llamada.
 
-**Capa 4 — ARIA (auditoría autónoma):** Script independiente `aria_audit.py`. Corre como cron job separado. Lee datos de Vapi/GHL, audita con Claude Sonnet 4.5, detecta errores y discrepancias, guarda en Supabase, y envía reportes diarios. **NUNCA modifica app.py ni Elena.**
+**Capa 4 — ARIA (auditoría autónoma):** Script independiente `aria_audit.py`. Corre como cron job separado. Lee datos de Vapi/GHL, audita con Claude Sonnet 4.5, detecta errores y discrepancias, guarda en Supabase, notifica a Juan por Telegram con botones de aprobación/rechazo, y envía reportes diarios. **NUNCA modifica app.py ni Elena.**
 
 ---
 
@@ -46,9 +46,12 @@ El sistema tiene cuatro capas que trabajan juntas:
 | `BOOKING_TITLE` | Título de la cita (configurable) | `Evaluación Botox - Laser Place Miami` |
 | `ANTHROPIC_API_KEY` | API key de Anthropic (para ARIA) | Ver Render env vars |
 | `SUPABASE_URL` | URL del proyecto Supabase | `https://subzlfzuzcyqyfrzszjb.supabase.co` |
-| `SUPABASE_SERVICE_KEY` | Service Role Key de Supabase | **PENDIENTE — obtener del dashboard** |
-
-> **NOTA:** Las variables de ARIA (ANTHROPIC_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY) deben agregarse en Render → Environment → Add Variable.
+| `SUPABASE_SERVICE_KEY` | Service Role Key JWT de Supabase | ✅ Configurado |
+| `GMAIL_FROM` | Email remitente para reportes ARIA | `vitusmediard@gmail.com` |
+| `GMAIL_APP_PASSWORD` | App Password de Gmail para SMTP | ✅ Configurado |
+| `TELEGRAM_BOT_TOKEN` | Token del bot `@aria_elena_bot` | ✅ Configurado |
+| `TELEGRAM_CHAT_ID` | Chat ID de Juan en Telegram | `7962087583` |
+| `RENDER_SERVER_URL` | URL base del servidor en Render | `https://elena-pdem.onrender.com` |
 
 ---
 
@@ -171,10 +174,36 @@ Todos deben usar el prefijo `contact.`:
 ```
 Vapi API → aria_audit.py → Claude Sonnet 4.5 → Supabase
                         ↓
-                   GHL API (correcciones)
+              discrepancia detectada (confianza ≥ 85%)
                         ↓
-                   Email (reportes diarios)
+           Telegram @aria_elena_bot → Juan (botones ✅/❌)
+                        ↓
+           /aria/telegram/webhook (app.py) → apply_correction()
+                        ↓
+           GHL API (correcciones) + feedback_log (Supabase)
+                        ↓
+                   Email + Telegram (reportes diarios)
 ```
+
+### Flujo de aprobación de correcciones
+
+1. ARIA detecta discrepancia con confianza ≥ 85%
+2. Guarda en `aria_corrections` (status=`pending`)
+3. Envía mensaje Telegram a Juan con botones inline
+4. Juan toca ✅ APROBAR o ❌ RECHAZAR
+5. Telegram envía callback a `/aria/telegram/webhook`
+6. Si aprueba: `apply_correction()` actualiza `elena_last_outcome` en GHL + status=`applied`
+7. Si rechaza: status=`reverted` + se guarda en `feedback_log`
+8. El mensaje original en Telegram se edita mostrando la decisión tomada
+
+**Endpoints de ARIA en app.py:**
+
+| Endpoint | Método | Descripción |
+|---------|--------|-------------|
+| `/aria/telegram/webhook` | POST | Recibe callbacks de botones Telegram |
+| `/aria/correction/<id>/approve` | GET/POST | Aprobar corrección via link directo |
+| `/aria/correction/<id>/reject` | GET/POST | Rechazar corrección via link directo |
+| `/aria/corrections/pending` | GET | Listar correcciones pendientes |
 
 ### Archivos de ARIA
 
@@ -234,20 +263,33 @@ python3.11 aria_audit.py dry-run
 
 ### Configuración del cron job en Render
 
-Para ejecutar ARIA diariamente a las 7am EST (12:00 UTC), agregar en Render:
-- **Cron Job:** `0 12 * * *`
-- **Comando:** `python3.11 aria_audit.py audit`
+**Cron Job activo:** `aria-daily-audit` (ID: `crn-d746bti4d50c73c27i30`)
+- **Schedule:** `0 11 * * *` — todos los días a las 7:00am EDT (Miami)
+- **Comando:** `python3.11 aria_audit.py audit 25`
+- **Auto-deploy:** Sí — se actualiza con cada push a `main`
 
-### Pendientes de ARIA
+### Telegram Bot
 
-| Tarea | Estado |
-|-------|--------|
-| Obtener SUPABASE_SERVICE_KEY del dashboard | **PENDIENTE** |
-| Ejecutar aria_schema.sql en Supabase SQL Editor | **PENDIENTE** |
-| Agregar variables de entorno en Render | **PENDIENTE** |
-| Configurar Gmail App Password para envío de emails | **PENDIENTE** |
-| Configurar cron job en Render | **PENDIENTE** |
-| Implementar loop de feedback RLHF (WhatsApp buttons) | Fase 2 |
+- **Bot:** `@aria_elena_bot` — `t.me/aria_elena_bot`
+- **Webhook:** `https://elena-pdem.onrender.com/aria/telegram/webhook`
+- **Chat ID de Juan:** `7962087583`
+- **Configurado:** ✅ 29/03/2026
+
+### Estado de ARIA (29/03/2026)
+
+| Componente | Estado |
+|-----------|--------|
+| Motor `aria_audit.py` v1.1.0 | ✅ Operativo |
+| Schema Supabase (5 tablas) | ✅ Creado |
+| 50 llamadas auditadas (primer run) | ✅ En Supabase |
+| Variables en Render (18 variables) | ✅ Configuradas |
+| Cron job diario 7am EDT | ✅ Activo |
+| Email de reportes Gmail SMTP | ✅ Testeado |
+| Telegram bot con botones ✅/❌ | ✅ Operativo |
+| Webhook Telegram → Render | ✅ Configurado |
+| Loop de correcciones GHL | ✅ Implementado |
+| Feedback loop (feedback_log) | ✅ Implementado |
+| Métricas diarias corregidas por ARIA | ⚠️ Pendiente (Fase 3) |
 
 ### Modelo LLM de ARIA
 
@@ -259,12 +301,23 @@ Para ejecutar ARIA diariamente a las 7am EST (12:00 UTC), agregar en Render:
 
 ## Historial de versiones y fixes críticos
 
+### ARIA v1.1.0 (29/03/2026)
+- Loop de correcciones completo: Telegram → Juan → GHL
+- Bot `@aria_elena_bot` con botones inline ✅ APROBAR / ❌ RECHAZAR
+- Webhook `/aria/telegram/webhook` en app.py
+- Función `apply_correction()` que aplica/rechaza en GHL y actualiza Supabase
+- Endpoints alternativos `/aria/correction/<id>/approve` y `/reject`
+- Resumen diario por Telegram (complementa el email)
+- 18 variables de entorno configuradas en Render
+
 ### ARIA v1.0.0 (28/03/2026)
 - Primer release del sistema de auditoría
 - Auditoría con Claude Sonnet 4.5
 - Detección de 7 tipos de errores de Elena
-- Schema SQL completo en Supabase
-- Modo piloto funcional y probado con llamadas reales
+- Schema SQL completo en Supabase (5 tablas)
+- 50 llamadas auditadas en el primer run
+- Cron job diario 7am EDT en Render
+- Email de reportes vía Gmail SMTP con App Password
 
 ### v17.46 (28/03/2026)
 - **Fix:** `check_availability`, `get_contact`, `create_contact`, `create_booking` como inline model.tools — LLM ahora tiene los 9 tools via server URL
