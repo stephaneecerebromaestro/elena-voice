@@ -828,7 +828,7 @@ def apply_correction(correction_id: str, approved: bool, feedback_notes: str = "
         if success:
             supabase_update(
                 "call_audits",
-                {"id": f"eq.{audit_id}"},
+                {"id": audit_id},
                 {"audit_status": "feedback_approved"}
             )
     else:
@@ -837,14 +837,14 @@ def apply_correction(correction_id: str, approved: bool, feedback_notes: str = "
         success = True
         supabase_update(
             "call_audits",
-            {"id": f"eq.{audit_id}"},
+            {"id": audit_id},
             {"audit_status": "feedback_rejected"}
         )
 
     # 3. Actualizar el status de la corrección en Supabase
     supabase_update(
         "aria_corrections",
-        {"id": f"eq.{correction_id}"},
+        {"id": correction_id},
         {
             "correction_status": new_status,
             "ghl_response_code": ghl_response_code,
@@ -852,16 +852,16 @@ def apply_correction(correction_id: str, approved: bool, feedback_notes: str = "
         }
     )
 
-    # 4. Guardar en feedback_log
+    # 4. Guardar en feedback_log (sin correction_id — no existe en el schema)
     feedback_record = {
         "audit_id": audit_id,
-        "correction_id": correction_id,
+        "vapi_call_id": vapi_call_id,
         "feedback_type": "approved" if approved else "rejected",
         "feedback_source": "telegram",
         "original_outcome": old_value,
         "aria_outcome": new_value,
         "final_outcome": new_value if approved else old_value,
-        "feedback_notes": feedback_notes
+        "notes": feedback_notes or f"Telegram: {'aprobado' if approved else 'rechazado'} por Juan"
     }
     supabase_insert("feedback_log", feedback_record)
 
