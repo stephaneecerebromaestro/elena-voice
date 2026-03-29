@@ -1942,3 +1942,27 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)
+
+
+@app.route("/aria/debug/apply/<correction_id>", methods=["GET"])
+def aria_debug_apply(correction_id):
+    """Endpoint de diagnóstico TEMPORAL para debuggear apply_correction."""
+    import traceback, os
+    result = {
+        "correction_id": correction_id,
+        "SUPABASE_URL": os.getenv("SUPABASE_URL", "NOT_SET"),
+        "SUPABASE_SERVICE_KEY_len": len(os.getenv("SUPABASE_SERVICE_KEY", "")),
+        "TELEGRAM_BOT_TOKEN_len": len(os.getenv("TELEGRAM_BOT_TOKEN", "")),
+        "TELEGRAM_CHAT_ID": os.getenv("TELEGRAM_CHAT_ID", "NOT_SET"),
+    }
+    try:
+        from aria_audit import apply_correction
+        r = apply_correction(correction_id, False)
+        result["apply_correction_result"] = r
+        result["status"] = "success"
+    except Exception as e:
+        result["status"] = "error"
+        result["error_type"] = type(e).__name__
+        result["error_msg"] = str(e)
+        result["traceback"] = traceback.format_exc()
+    return jsonify(result)
