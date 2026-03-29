@@ -1822,33 +1822,37 @@ def aria_telegram_webhook():
             timeout=5
         )
 
-        # Importar y ejecutar apply_correction en background thread
-        def _apply():
-            try:
-                from aria_audit import apply_correction
-                result = apply_correction(correction_id, approved)
-                # Editar el mensaje original para reflejar la decisión
-                if message_id and chat_id:
-                    status_icon = "✅ APROBADO" if approved else "❌ RECHAZADO"
-                    original_text = message.get("text", "")
-                    new_text = f"{original_text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n<b>{status_icon}</b> por {from_user.get('first_name', 'Juan')}"
-                    requests.post(
-                        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
-                        json={
-                            "chat_id": chat_id,
-                            "message_id": message_id,
-                            "text": new_text[:4096],
-                            "parse_mode": "HTML",
-                            "reply_markup": {"inline_keyboard": []}  # Remover botones
-                        },
-                        timeout=5
-                    )
-            except Exception as e:
-                import logging
-                logging.getLogger("aria").error(f"apply_correction error: {e}")
-
-        t = threading.Thread(target=_apply, daemon=True)
-        t.start()
+        # Ejecutar apply_correction directamente (síncrono) para capturar errores
+        import logging
+        aria_log = logging.getLogger("aria")
+        try:
+            from aria_audit import apply_correction
+            aria_log.info(f"Ejecutando apply_correction: id={correction_id} approved={approved}")
+            result = apply_correction(correction_id, approved)
+            aria_log.info(f"apply_correction resultado: {result}")
+            # Editar el mensaje original para reflejar la decisión
+            if message_id and chat_id:
+                status_icon = "✅ APROBADO" if approved else "❌ RECHAZADO"
+                original_text = message.get("text", "")
+                new_text = f"{original_text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n<b>{status_icon}</b> por {from_user.get('first_name', 'Juan')}"
+                requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
+                    json={
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "text": new_text[:4096],
+                        "parse_mode": "HTML",
+                        "reply_markup": {"inline_keyboard": []}  # Remover botones
+                    },
+                    timeout=5
+                )
+        except Exception as e:
+            aria_log.error(f"apply_correction EXCEPTION: {type(e).__name__}: {e}", exc_info=True)
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": f"⚠️ Error en apply_correction:\n{type(e).__name__}: {str(e)[:200]}"},
+                timeout=5
+            )
 
         return jsonify({"ok": True})
 
