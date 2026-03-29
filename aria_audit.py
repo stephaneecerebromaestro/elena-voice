@@ -36,11 +36,13 @@ from anthropic import Anthropic
 # Credenciales (en producción, leer desde variables de entorno de Render)
 # Todas las credenciales se leen EXCLUSIVAMENTE desde variables de entorno de Render
 # NUNCA hardcodear credenciales en el código
-VAPI_API_KEY = os.environ["VAPI_API_KEY"]
-VAPI_ASSISTANT_ID = os.environ["VAPI_ASSISTANT_ID"]
-GHL_PIT = os.environ["GHL_PIT"]
-GHL_LOCATION_ID = os.environ["GHL_LOCATION_ID"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+# NOTA: Usar os.getenv() con default vacío para evitar KeyError al importar
+# el módulo desde el web service (app.py). Las funciones validan internamente.
+VAPI_API_KEY = os.getenv("VAPI_API_KEY", "")
+VAPI_ASSISTANT_ID = os.getenv("VAPI_ASSISTANT_ID", "")
+GHL_PIT = os.getenv("GHL_PIT", "")
+GHL_LOCATION_ID = os.getenv("GHL_LOCATION_ID", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://subzlfzuzcyqyfrzszjb.supabase.co")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")  # Requerido para escritura en Supabase
 
