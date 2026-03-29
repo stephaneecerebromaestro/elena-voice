@@ -1766,7 +1766,162 @@ def update_date():
     return jsonify({"success": False, "error": last_error, "attempts": 3}), 500
 
 
-# ─── Health Check ─────────────────────────────────────────────────────────────
+# ─── ARIA — Endpoints de Aprobación/Rechazo de Correcciones ───────────────────────────────
+
+@app.route("/aria/telegram/webhook", methods=["POST"])
+def aria_telegram_webhook():
+    """
+    Webhook de Telegram para recibir los callbacks de los botones inline.
+    Cuando Juan toca ✅ APROBAR o ❌ RECHAZAR en Telegram, Telegram envía
+    un callback_query a este endpoint.
+    
+    Configurar el webhook en Telegram:
+    POST https://api.telegram.org/bot<TOKEN>/setWebhook
+    {"url": "https://elena-pdem.onrender.com/aria/telegram/webhook"}
+    """
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+    try:
+        data = request.get_json(force=True)
+        if not data:
+            return jsonify({"ok": True})
+
+        # Procesar callback_query (cuando Juan toca un botón)
+        callback_query = data.get("callback_query")
+        if not callback_query:
+            # Mensaje de texto normal — ignorar
+            return jsonify({"ok": True})
+
+        callback_id = callback_query.get("id")
+        callback_data = callback_query.get("data", "")
+        from_user = callback_query.get("from", {})
+        message = callback_query.get("message", {})
+        chat_id = message.get("chat", {}).get("id")
+        message_id = message.get("message_id")
+
+        TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+        # Parsear el callback: "approve:<correction_id>" o "reject:<correction_id>"
+        if ":" not in callback_data:
+            http_requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                json={"callback_query_id": callback_id, "text": "Formato inválido"}
+            )
+            return jsonify({"ok": True})
+
+        action, correction_id = callback_data.split(":", 1)
+        approved = (action == "approve")
+
+        # Responder inmediatamente a Telegram (evita el spinner)
+        action_text = "✅ Procesando aprobación..." if approved else "❌ Procesando rechazo..."
+        http_requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+            json={"callback_query_id": callback_id, "text": action_text},
+            timeout=5
+        )
+
+        # Importar y ejecutar apply_correction en background thread
+        def _apply():
+            try:
+                from aria_audit import apply_correction
+                result = apply_correction(correction_id, approved)
+                # Editar el mensaje original para reflejar la decisión
+                if message_id and chat_id:
+                    status_icon = "✅ APROBADO" if approved else "❌ RECHAZADO"
+                    original_text = message.get("text", "")
+                    new_text = f"{original_text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n<b>{status_icon}</b> por {from_user.get('first_name', 'Juan')}"
+                    http_requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
+                        json={
+                            "chat_id": chat_id,
+                            "message_id": message_id,
+                            "text": new_text[:4096],
+                            "parse_mode": "HTML",
+                            "reply_markup": {"inline_keyboard": []}  # Remover botones
+                        },
+                        timeout=5
+                    )
+            except Exception as e:
+                import logging
+                logging.getLogger("aria").error(f"apply_correction error: {e}")
+
+        t = threading.Thread(target=_apply, daemon=True)
+        t.start()
+
+        return jsonify({"ok": True})
+
+    except Exception as e:
+        import logging
+        logging.getLogger("aria").error(f"Telegram webhook error: {e}")
+        return jsonify({"ok": True})  # Siempre 200 a Telegram
+
+
+@app.route("/aria/correction/<correction_id>/approve", methods=["GET", "POST"])
+def aria_approve_correction(correction_id):
+    """
+    Endpoint alternativo para aprobar una corrección via link directo.
+    Usado como fallback si los botones de Telegram no funcionan.
+    """
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        from aria_audit import apply_correction
+        result = apply_correction(correction_id, approved=True)
+        if result.get("success"):
+            return jsonify({"status": "applied", "message": f"Corrección aplicada: {result.get('old_value')} → {result.get('new_value')}", **result})
+        else:
+            return jsonify({"status": "error", **result}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@app.route("/aria/correction/<correction_id>/reject", methods=["GET", "POST"])
+def aria_reject_correction(correction_id):
+    """
+    Endpoint alternativo para rechazar una corrección via link directo.
+    """
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        from aria_audit import apply_correction
+        result = apply_correction(correction_id, approved=False)
+        if result.get("success"):
+            return jsonify({"status": "rejected", "message": f"Corrección rechazada. Se mantiene: {result.get('old_value')}", **result})
+        else:
+            return jsonify({"status": "error", **result}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@app.route("/aria/corrections/pending", methods=["GET"])
+def aria_pending_corrections():
+    """
+    Listar todas las correcciones pendientes de aprobación.
+    """
+    import os
+    SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+    SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+    if not SUPABASE_SERVICE_KEY:
+        return jsonify({"error": "SUPABASE_SERVICE_KEY no configurado"}), 500
+
+    r = http_requests.get(
+        f"{SUPABASE_URL}/rest/v1/aria_corrections",
+        headers={
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"
+        },
+        params={"correction_status": "eq.pending", "select": "*", "order": "created_at.desc"},
+        timeout=10
+    )
+    if r.status_code == 200:
+        corrections = r.json()
+        return jsonify({"pending": len(corrections), "corrections": corrections})
+    return jsonify({"error": r.text[:200]}), 500
+
+
+# ─── Health Check ──────────────────────────────────────────────────────────────────────────────────
 @app.route("/health", methods=["GET"])
 def health():
     now = datetime.now(TZ)

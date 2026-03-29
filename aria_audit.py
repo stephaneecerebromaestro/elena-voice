@@ -2,15 +2,16 @@
 """
 ARIA — Auditoría y Revisión Inteligente Automatizada
 Sistema de auditoría automática de llamadas para Elena AI Voice Agent
-Versión: 1.0.0 — 28 marzo 2026
+Versión: 1.1.0 — 29 marzo 2026
 
 Arquitectura:
   1. Fetch de llamadas desde Vapi API (últimas 25 horas)
   2. Auditoría con Claude 3.5 Sonnet (clasificación + análisis de calidad)
   3. Detección de discrepancias vs clasificación original en GHL
   4. Almacenamiento en Supabase
-  5. Corrección automática en GHL (con aprobación de Juan)
-  6. Reporte diario via Email
+  5. Notificación Telegram a Juan con botones ✅/❌ para aprobar/rechazar correcciones
+  6. Corrección automática en GHL tras aprobación de Juan
+  7. Reporte diario via Email
 
 IMPORTANTE: Este script es completamente independiente de app.py.
 No modifica ningún archivo de Elena. Solo lee datos de Vapi/GHL y escribe en Supabase.
@@ -47,11 +48,18 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")  # Requerido para e
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "vitusmediard@gmail.com")
 ADMIN_WHATSAPP = os.getenv("ADMIN_WHATSAPP", "+17865533777")
 
+# Telegram — bot de notificaciones ARIA
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# URL base del servidor en Render (para links de aprobación)
+RENDER_SERVER_URL = os.getenv("RENDER_SERVER_URL", "https://elena-pdem.onrender.com")
+
 # Configuración de auditoría
 AUDIT_LOOKBACK_HOURS = int(os.getenv("AUDIT_LOOKBACK_HOURS", "25"))
 AUDIT_BATCH_SIZE = int(os.getenv("AUDIT_BATCH_SIZE", "50"))
 CONFIDENCE_THRESHOLD_CORRECTION = float(os.getenv("CONFIDENCE_THRESHOLD_CORRECTION", "0.85"))
-ARIA_VERSION = "1.0.0"
+ARIA_VERSION = "1.1.0"
 AUDIT_MODEL = "claude-sonnet-4-5-20250929"  # Claude Sonnet 4.5 — mejor disponible en esta cuenta
 
 # Logging
@@ -66,6 +74,132 @@ log = logging.getLogger("aria")
 # CLIENTE ANTHROPIC
 # ============================================================
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+# ============================================================
+# TELEGRAM — NOTIFICACIONES CON BOTONES DE APROBACIÓN
+# ============================================================
+
+def telegram_send(text: str, reply_markup: dict = None) -> Optional[dict]:
+    """
+    Enviar un mensaje al chat de Juan via Telegram Bot API.
+    Soporta botones inline para aprobación/rechazo.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        log.warning("Telegram no configurado — saltando notificación")
+        return None
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json=payload,
+            timeout=10
+        )
+        if r.status_code == 200:
+            result = r.json()
+            msg_id = result.get("result", {}).get("message_id")
+            log.info(f"Telegram message sent — msg_id={msg_id}")
+            return result.get("result")
+        else:
+            log.error(f"Telegram send error: {r.status_code} — {r.text[:200]}")
+            return None
+    except Exception as e:
+        log.error(f"Telegram exception: {e}")
+        return None
+
+
+def telegram_notify_discrepancy(correction_id: str, call_id: str, phone: str,
+                                 original_outcome: str, aria_outcome: str,
+                                 confidence: float, reasoning: str,
+                                 errors: list, playbook_score: float) -> bool:
+    """
+    Notificar a Juan sobre una discrepancia detectada por ARIA.
+    Incluye botones inline para APROBAR ✅ o RECHAZAR ❌ la corrección.
+    """
+    confidence_pct = int(confidence * 100)
+    errors_text = ""
+    if errors:
+        errors_text = "\n" + "\n".join(
+            f"  • [{e.get('severity','?').upper()}] {e.get('type','?')}: {e.get('description','')[:80]}"
+            for e in errors[:4]
+        )
+
+    playbook_text = f"{playbook_score*100:.0f}%" if playbook_score is not None else "N/A"
+    phone_display = phone[-10:] if phone and len(phone) >= 10 else phone or "N/A"
+
+    text = (
+        f"🔍 <b>ARIA detectó una discrepancia</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📞 Teléfono: <code>+{phone_display}</code>\n"
+        f"📋 GHL dice: <b>{original_outcome}</b>\n"
+        f"🤖 ARIA dice: <b>{aria_outcome}</b>\n"
+        f"📊 Confianza: <b>{confidence_pct}%</b> | Playbook: {playbook_text}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💬 <i>{reasoning[:300]}</i>"
+    )
+    if errors_text:
+        text += f"\n\n⚠️ <b>Errores detectados:</b>{errors_text}"
+
+    # Botones inline: APROBAR aplica la corrección en GHL, RECHAZAR la descarta
+    reply_markup = {
+        "inline_keyboard": [[
+            {
+                "text": f"✅ APROBAR ({original_outcome} → {aria_outcome})",
+                "callback_data": f"approve:{correction_id}"
+            }
+        ], [
+            {
+                "text": "❌ RECHAZAR (mantener clasificación original)",
+                "callback_data": f"reject:{correction_id}"
+            }
+        ]]
+    }
+
+    result = telegram_send(text, reply_markup)
+    return result is not None
+
+
+def telegram_send_daily_summary(metrics: dict, audit_date: str, top_errors: list) -> bool:
+    """
+    Enviar resumen diario compacto por Telegram (complementa el email detallado).
+    """
+    total = metrics.get("total_calls", 0)
+    agendo = metrics.get("calls_agendo", 0)
+    no_agendo = metrics.get("calls_no_agendo", 0)
+    no_contesto = metrics.get("calls_no_contesto", 0)
+    conversion = metrics.get("conversion_rate", 0) * 100
+    playbook = metrics.get("avg_playbook_adherence")
+    discrepancies = metrics.get("aria_discrepancies_found", 0)
+    pb_str = f"{playbook*100:.0f}%" if playbook else "N/A"
+
+    # Top error
+    top_err = ""
+    if top_errors:
+        e = top_errors[0]
+        top_err = f"\n⚠️ Error #1: <b>{e.get('type','?')}</b> (x{e.get('count',0)})"
+
+    text = (
+        f"📊 <b>ARIA — Reporte Elena {audit_date}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📞 Llamadas: <b>{total}</b> | ✅ Citas: <b>{agendo}</b>\n"
+        f"📈 Conversión: <b>{conversion:.1f}%</b> | Playbook: <b>{pb_str}</b>\n"
+        f"🔍 Discrepancias ARIA: <b>{discrepancies}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"❌ No agendó: {no_agendo} | 📵 No contestó: {no_contesto}"
+        f"{top_err}\n"
+        f"\n📧 Reporte completo enviado por email."
+    )
+    result = telegram_send(text)
+    return result is not None
 
 
 # ============================================================
@@ -587,7 +721,7 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
     saved = supabase_upsert("call_audits", audit_record)
     
     if saved and has_discrepancy and ghl_contact_id:
-        # Registrar corrección pendiente
+        # Registrar corrección pendiente en Supabase
         correction_record = {
             "audit_id": saved.get("id"),
             "vapi_call_id": call_id,
@@ -597,7 +731,23 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
             "new_value": aria_outcome,
             "correction_status": "pending"
         }
-        supabase_insert("aria_corrections", correction_record)
+        correction_saved = supabase_insert("aria_corrections", correction_record)
+
+        # Notificar a Juan por Telegram con botones ✅/❌
+        if correction_saved:
+            correction_id = correction_saved.get("id", "")
+            telegram_notify_discrepancy(
+                correction_id=correction_id,
+                call_id=call_id,
+                phone=phone,
+                original_outcome=original_outcome,
+                aria_outcome=aria_outcome,
+                confidence=aria_confidence,
+                reasoning=audit_result.get("reasoning", ""),
+                errors=audit_result.get("errors_detected", []),
+                playbook_score=audit_result.get("playbook_adherence_score")
+            )
+            log.info(f"Telegram notification sent for correction {correction_id}")
     
     return {
         "call_id": call_id,
@@ -615,8 +765,137 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
 
 
 # ============================================================
-# MÉTRICAS DIARIAS
+# APPLY CORRECTION — Aplicar corrección aprobada en GHL
 # ============================================================
+
+def apply_correction(correction_id: str, approved: bool, feedback_notes: str = "") -> dict:
+    """
+    Aplicar o rechazar una corrección pendiente.
+    Llamado desde el endpoint /aria/correction/<id>/approve o /reject en app.py.
+    
+    Args:
+        correction_id: UUID de la corrección en aria_corrections
+        approved: True = aplicar en GHL, False = rechazar
+        feedback_notes: Notas opcionales de Juan
+    
+    Returns:
+        dict con status y detalles
+    """
+    if not SUPABASE_SERVICE_KEY:
+        return {"success": False, "error": "SUPABASE_SERVICE_KEY no configurado"}
+
+    # 1. Obtener la corrección de Supabase
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/aria_corrections",
+        headers={
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"
+        },
+        params={"id": f"eq.{correction_id}", "select": "*"},
+        timeout=10
+    )
+    if r.status_code != 200 or not r.json():
+        return {"success": False, "error": f"Corrección no encontrada: {correction_id}"}
+
+    correction = r.json()[0]
+    current_status = correction.get("correction_status")
+
+    # Verificar que no esté ya procesada
+    if current_status != "pending":
+        return {
+            "success": False,
+            "error": f"Corrección ya procesada (status={current_status})",
+            "correction_id": correction_id
+        }
+
+    ghl_contact_id = correction.get("ghl_contact_id")
+    old_value = correction.get("old_value")
+    new_value = correction.get("new_value")
+    audit_id = correction.get("audit_id")
+    vapi_call_id = correction.get("vapi_call_id")
+
+    ghl_response_code = None
+    ghl_response_body = None
+
+    if approved:
+        # 2a. Aplicar la corrección en GHL
+        success = update_ghl_contact_outcome(ghl_contact_id, new_value)
+        new_status = "applied" if success else "pending"
+        ghl_response_code = 200 if success else 500
+        ghl_response_body = "OK" if success else "GHL update failed"
+
+        # Actualizar el audit_status en call_audits
+        if success:
+            supabase_update(
+                "call_audits",
+                {"id": f"eq.{audit_id}"},
+                {"audit_status": "feedback_approved"}
+            )
+    else:
+        # 2b. Rechazar — no tocar GHL, solo registrar
+        new_status = "reverted"
+        success = True
+        supabase_update(
+            "call_audits",
+            {"id": f"eq.{audit_id}"},
+            {"audit_status": "feedback_rejected"}
+        )
+
+    # 3. Actualizar el status de la corrección en Supabase
+    supabase_update(
+        "aria_corrections",
+        {"id": f"eq.{correction_id}"},
+        {
+            "correction_status": new_status,
+            "ghl_response_code": ghl_response_code,
+            "ghl_response_body": ghl_response_body
+        }
+    )
+
+    # 4. Guardar en feedback_log
+    feedback_record = {
+        "audit_id": audit_id,
+        "correction_id": correction_id,
+        "feedback_type": "approved" if approved else "rejected",
+        "feedback_source": "telegram",
+        "original_outcome": old_value,
+        "aria_outcome": new_value,
+        "final_outcome": new_value if approved else old_value,
+        "feedback_notes": feedback_notes
+    }
+    supabase_insert("feedback_log", feedback_record)
+
+    # 5. Confirmar a Juan por Telegram
+    if approved and success:
+        msg = (
+            f"✅ <b>Corrección aplicada en GHL</b>\n"
+            f"<code>{vapi_call_id[:20] if vapi_call_id else 'N/A'}...</code>\n"
+            f"Outcome actualizado: <b>{old_value}</b> → <b>{new_value}</b>"
+        )
+    elif approved and not success:
+        msg = (
+            f"⚠️ <b>Error al aplicar corrección en GHL</b>\n"
+            f"La corrección fue aprobada pero GHL devolvió un error. "
+            f"Revisa el dashboard de Supabase."
+        )
+    else:
+        msg = (
+            f"❌ <b>Corrección rechazada</b>\n"
+            f"<code>{vapi_call_id[:20] if vapi_call_id else 'N/A'}...</code>\n"
+            f"Se mantiene la clasificación original: <b>{old_value}</b>"
+        )
+    telegram_send(msg)
+
+    log.info(f"Correction {correction_id}: approved={approved} status={new_status}")
+    return {
+        "success": success,
+        "correction_id": correction_id,
+        "approved": approved,
+        "new_status": new_status,
+        "old_value": old_value,
+        "new_value": new_value
+    }
+
 
 def calculate_daily_metrics(results: list, audit_date: str) -> dict:
     """Calcular métricas agregadas del día."""
