@@ -1805,7 +1805,7 @@ def aria_telegram_webhook():
 
         # Parsear el callback: "approve:<correction_id>" o "reject:<correction_id>"
         if ":" not in callback_data:
-            http_requests.post(
+            requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                 json={"callback_query_id": callback_id, "text": "Formato inválido"}
             )
@@ -1816,7 +1816,7 @@ def aria_telegram_webhook():
 
         # Responder inmediatamente a Telegram (evita el spinner)
         action_text = "✅ Procesando aprobación..." if approved else "❌ Procesando rechazo..."
-        http_requests.post(
+        requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
             json={"callback_query_id": callback_id, "text": action_text},
             timeout=5
@@ -1832,7 +1832,7 @@ def aria_telegram_webhook():
                     status_icon = "✅ APROBADO" if approved else "❌ RECHAZADO"
                     original_text = message.get("text", "")
                     new_text = f"{original_text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n<b>{status_icon}</b> por {from_user.get('first_name', 'Juan')}"
-                    http_requests.post(
+                    requests.post(
                         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
                         json={
                             "chat_id": chat_id,
