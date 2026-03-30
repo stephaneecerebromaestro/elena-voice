@@ -1660,10 +1660,18 @@ def vapi_server_url():
             # ARIA: auditar la llamada en tiempo real (thread separado, no bloquea)
             try:
                 call_data = message.get("call") or message
-                aria_t = threading.Thread(
-                    target=lambda: __import__('aria_audit').process_single_call_realtime(call_data),
-                    daemon=True
-                )
+                def _aria_realtime_audit(cd):
+                    try:
+                        import sys, os, importlib
+                        # Forzar reload para que lea env vars frescas en tiempo de ejecución
+                        if 'aria_audit' in sys.modules:
+                            mod = importlib.reload(sys.modules['aria_audit'])
+                        else:
+                            mod = importlib.import_module('aria_audit')
+                        mod.process_single_call_realtime(cd)
+                    except Exception as _e:
+                        logging.getLogger('aria').error(f'ARIA realtime audit error: {_e}', exc_info=True)
+                aria_t = threading.Thread(target=_aria_realtime_audit, args=(call_data,), daemon=True)
                 aria_t.start()
             except Exception:
                 pass  # ARIA nunca bloquea ni rompe el flujo principal
@@ -1783,11 +1791,11 @@ def update_date():
 @app.route("/aria/telegram/webhook", methods=["POST"])
 def aria_telegram_webhook():
     """
-    Webhook de Telegram para recibir los callbacks de los botones inline.
-    Cuando Juan toca APROBAR o RECHAZAR, ejecuta la corrección directamente
-    via HTTP requests a Supabase y GHL — sin importar aria_audit.
+    Webhook de Telegram unificado:
+    - Callbacks de botones inline (APROBAR / RECHAZAR)
+    - Comandos de texto (/score, /reporte, /errores, /eficacia, /audit, /llamada)
     """
-    import os, logging
+    import os, logging, threading
     aria_log = logging.getLogger("aria")
 
     try:
@@ -1795,6 +1803,37 @@ def aria_telegram_webhook():
         if not data:
             return jsonify({"ok": True})
 
+        # ── Comandos de texto ──────────────────────────────────────────────────
+        msg = data.get("message") or data.get("edited_message")
+        if msg and not data.get("callback_query"):
+            text = msg.get("text", "").strip()
+            chat_id = str(msg.get("chat", {}).get("id", ""))
+            if text and text.startswith("/"):
+                parts = text.split(" ", 1)
+                command = parts[0].lower().split("@")[0]
+                args = parts[1] if len(parts) > 1 else ""
+                aria_log.info(f"TELEGRAM COMMAND: {command} {args} from {chat_id}")
+                def _handle_cmd(cmd, a, cid):
+                    try:
+                        import sys, importlib
+                        if 'aria_audit' in sys.modules:
+                            mod = importlib.reload(sys.modules['aria_audit'])
+                        else:
+                            mod = importlib.import_module('aria_audit')
+                        mod.telegram_handle_command(cmd, a, cid)
+                    except Exception as _e:
+                        aria_log.error(f"TELEGRAM CMD error: {_e}", exc_info=True)
+                        BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+                        if BOT_TOKEN and chat_id:
+                            http_requests.post(
+                                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                                json={"chat_id": cid, "text": f"⚠️ Error: {str(_e)[:100]}"},
+                                timeout=5
+                            )
+                threading.Thread(target=_handle_cmd, args=(command, args, chat_id), daemon=True).start()
+            return jsonify({"ok": True})
+
+        # ── Callbacks de botones ───────────────────────────────────────────────
         callback_query = data.get("callback_query")
         if not callback_query:
             return jsonify({"ok": True})
@@ -2195,69 +2234,6 @@ def aria_vapi_end_of_call():
         logging.getLogger("aria").error(f"VAPI WEBHOOK EXCEPTION: {e}", exc_info=True)
         return jsonify({"ok": True})
 
-
-# ─── ARIA: Telegram Commands ──────────────────────────────────────────────────────────────────────
-@app.route("/aria/telegram/webhook", methods=["POST"])
-def aria_telegram_webhook_commands():
-    """
-    Extensión del webhook de Telegram para manejar comandos on-demand.
-    Los comandos /audit, /reporte, /errores, /eficacia, /score, /llamada
-    se procesan aquí y se delegan a aria_audit.telegram_handle_command.
-
-    NOTA: Esta ruta es ADICIONAL al webhook principal de Telegram (aria_telegram_webhook).
-    El webhook principal maneja callbacks de botones. Esta maneja mensajes de texto.
-    """
-    import os, logging, threading
-    aria_log = logging.getLogger("aria")
-
-    try:
-        data = request.get_json(force=True) or {}
-
-        # Si es un callback_query, lo maneja el webhook principal
-        if data.get("callback_query"):
-            return aria_telegram_webhook()
-
-        # Manejar mensajes de texto (comandos)
-        message = data.get("message") or data.get("edited_message")
-        if not message:
-            return jsonify({"ok": True})
-
-        text = message.get("text", "").strip()
-        chat_id = str(message.get("chat", {}).get("id", ""))
-
-        if not text or not text.startswith("/"):
-            return jsonify({"ok": True})
-
-        # Parsear comando y argumentos
-        parts = text.split(" ", 1)
-        command = parts[0].lower().split("@")[0]  # Remover @botname si existe
-        args = parts[1] if len(parts) > 1 else ""
-
-        aria_log.info(f"TELEGRAM COMMAND: {command} {args} from chat {chat_id}")
-
-        # Procesar en background
-        def handle_async():
-            try:
-                from aria_audit import telegram_handle_command
-                telegram_handle_command(command, args, chat_id)
-            except Exception as e:
-                aria_log.error(f"TELEGRAM COMMAND error: {e}", exc_info=True)
-                BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-                if BOT_TOKEN and chat_id:
-                    http_requests.post(
-                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                        json={"chat_id": chat_id, "text": f"⚠️ Error: {str(e)[:100]}"},
-                        timeout=5
-                    )
-
-        thread = threading.Thread(target=handle_async, daemon=True)
-        thread.start()
-
-        return jsonify({"ok": True})
-
-    except Exception as e:
-        logging.getLogger("aria").error(f"TELEGRAM COMMANDS EXCEPTION: {e}", exc_info=True)
-        return jsonify({"ok": True})
 
 
 # ─── ARIA: Manual Report Triggers ─────────────────────────────────────────────────────────────────

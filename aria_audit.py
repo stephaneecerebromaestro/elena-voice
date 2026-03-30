@@ -66,7 +66,7 @@ CONFIDENCE_THRESHOLD_CORRECTION = float(os.getenv("CONFIDENCE_THRESHOLD_CORRECTI
 ARIA_VERSION = "2.0.0"
 
 # FIX #1: Modelo correcto verificado en la cuenta
-AUDIT_MODEL = "claude-sonnet-4-5-20250929"
+AUDIT_MODEL = "claude-sonnet-4-5"
 
 # Logging
 logging.basicConfig(
