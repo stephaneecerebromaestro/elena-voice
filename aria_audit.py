@@ -129,10 +129,13 @@ def telegram_send(text: str, reply_markup: dict = None, chat_id: str = None) -> 
 def telegram_notify_discrepancy(correction_id: str, call_id: str, phone: str,
                                  original_outcome: str, aria_outcome: str,
                                  confidence: float, reasoning: str,
-                                 errors: list, playbook_score: float) -> bool:
+                                 errors: list, playbook_score: float,
+                                 contact_name: str = None,
+                                 call_ended_at: str = None) -> bool:
     """
     Notificar a Juan sobre una discrepancia detectada por ARIA.
     Incluye botones inline para APROBAR ✅ o RECHAZAR ❌ la corrección.
+    Muestra nombre del contacto y fecha/hora de la llamada.
     """
     confidence_pct = int(confidence * 100)
     errors_text = ""
@@ -141,14 +144,33 @@ def telegram_notify_discrepancy(correction_id: str, call_id: str, phone: str,
             f"  • [{e.get('severity','?').upper()}] {e.get('type','?')}: {e.get('description','')[:80]}"
             for e in errors[:4]
         )
-
     playbook_text = f"{playbook_score*100:.0f}%" if playbook_score is not None else "N/A"
     phone_display = phone[-10:] if phone and len(phone) >= 10 else phone or "N/A"
+
+    # Nombre del contacto
+    name_line = f"👤 Contacto: <b>{contact_name}</b>\n" if contact_name else ""
+
+    # Fecha y hora de la llamada (convertir de UTC a EDT)
+    datetime_line = ""
+    if call_ended_at:
+        try:
+            from datetime import timezone
+            import pytz
+            edt = pytz.timezone("America/New_York")
+            # Vapi envía ISO 8601 con Z o +00:00
+            dt_str = call_ended_at.replace("Z", "+00:00")
+            dt_utc = datetime.fromisoformat(dt_str)
+            dt_edt = dt_utc.astimezone(edt)
+            datetime_line = f"🕐 Llamada: <b>{dt_edt.strftime('%d/%m/%Y %I:%M %p')} EDT</b>\n"
+        except Exception:
+            datetime_line = f"🕐 Llamada: <b>{call_ended_at[:16].replace('T', ' ')} UTC</b>\n"
 
     text = (
         f"🔍 <b>ARIA detectó una discrepancia</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{name_line}"
         f"📞 Teléfono: <code>+{phone_display}</code>\n"
+        f"{datetime_line}"
         f"📋 GHL dice: <b>{original_outcome}</b>\n"
         f"🤖 ARIA dice: <b>{aria_outcome}</b>\n"
         f"📊 Confianza: <b>{confidence_pct}%</b> | Playbook: {playbook_text}\n"
@@ -819,6 +841,14 @@ def get_ghl_contact_fields(contact_id: str) -> dict:
             aria_key = ELENA_FIELD_IDS[field_id]
             elena_fields[aria_key] = field.get("value")
 
+    # Incluir nombre del contacto desde campos estándar de GHL
+    first = (contact.get("firstName") or "").strip()
+    last = (contact.get("lastName") or "").strip()
+    full_name = f"{first} {last}".strip() or None
+    elena_fields["contact_first_name"] = first or None
+    elena_fields["contact_last_name"] = last or None
+    elena_fields["contact_full_name"] = full_name
+
     return elena_fields
 
 
@@ -1161,7 +1191,9 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
                 confidence=aria_confidence,
                 reasoning=audit_result.get("reasoning", ""),
                 errors=audit_result.get("errors_detected", []),
-                playbook_score=audit_result.get("playbook_adherence_score")
+                playbook_score=audit_result.get("playbook_adherence_score"),
+                contact_name=ghl_fields.get("contact_full_name"),
+                call_ended_at=ended_at,
             )
             log.info(f"Telegram notification sent for correction {correction_id}")
 
