@@ -831,15 +831,22 @@ def apply_correction(correction_id: str, approved: bool, feedback_notes: str = "
     Returns:
         dict con status y detalles
     """
-    if not SUPABASE_SERVICE_KEY:
+    # Leer credenciales en tiempo de ejecución (no en tiempo de import)
+    # Esto garantiza que las env vars de Render estén disponibles
+    _supabase_key = os.environ.get("SUPABASE_SERVICE_KEY") or SUPABASE_SERVICE_KEY
+    _supabase_url = os.environ.get("SUPABASE_URL") or SUPABASE_URL
+    _ghl_pit = os.environ.get("GHL_PIT") or GHL_PIT
+    _ghl_location_id = os.environ.get("GHL_LOCATION_ID") or GHL_LOCATION_ID
+
+    if not _supabase_key:
         return {"success": False, "error": "SUPABASE_SERVICE_KEY no configurado"}
 
     # 1. Obtener la corrección de Supabase
     r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/aria_corrections",
+        f"{_supabase_url}/rest/v1/aria_corrections",
         headers={
-            "apikey": SUPABASE_SERVICE_KEY,
-            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"
+            "apikey": _supabase_key,
+            "Authorization": f"Bearer {_supabase_key}"
         },
         params={"id": f"eq.{correction_id}", "select": "*"},
         timeout=10

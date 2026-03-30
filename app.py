@@ -1823,10 +1823,13 @@ def aria_telegram_webhook():
             timeout=5
         )
 
-        # Ejecutar apply_correction directamente (síncrono) para capturar errores
-        import logging
+        # Ejecutar apply_correction con recarga del módulo para garantizar env vars frescas
+        import logging, importlib, sys
         aria_log = logging.getLogger("aria")
         try:
+            # Forzar recarga del módulo para que lea las env vars en tiempo de ejecución
+            if 'aria_audit' in sys.modules:
+                importlib.reload(sys.modules['aria_audit'])
             from aria_audit import apply_correction
             aria_log.info(f"Ejecutando apply_correction: id={correction_id} approved={approved}")
             result = apply_correction(correction_id, approved)
