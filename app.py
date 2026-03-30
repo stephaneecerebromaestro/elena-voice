@@ -2130,6 +2130,169 @@ def aria_diag_webhook():
     return jsonify(result)
 
 
+# ─── ARIA: Vapi End-of-Call Webhook ──────────────────────────────────────────────────────────────
+@app.route("/aria/vapi/end-of-call", methods=["POST"])
+def aria_vapi_end_of_call():
+    """
+    Webhook disparado por Vapi cuando termina cada llamada.
+    Audita la llamada en tiempo real con Claude y notifica a Juan por Telegram
+    si detecta una discrepancia con la clasificación de GHL.
+
+    Configurar en Vapi: Server URL → https://elena-pdem.onrender.com/aria/vapi/end-of-call
+    Events: end-of-call-report
+    """
+    import os, logging, threading
+    aria_log = logging.getLogger("aria")
+
+    try:
+        data = request.get_json(force=True) or {}
+        msg_type = data.get("message", {}).get("type") if isinstance(data.get("message"), dict) else data.get("type")
+
+        # Vapi puede enviar el payload directo o dentro de data.message
+        call_data = data.get("message", {}).get("call") or data.get("call") or data.get("message") or data
+
+        # Solo procesar end-of-call-report
+        if msg_type and msg_type != "end-of-call-report":
+            return jsonify({"ok": True, "skipped": f"type={msg_type}"})
+
+        call_id = call_data.get("id") or data.get("message", {}).get("call", {}).get("id")
+        if not call_id:
+            aria_log.warning("VAPI WEBHOOK: no call_id in payload")
+            return jsonify({"ok": True, "skipped": "no call_id"})
+
+        aria_log.info(f"VAPI WEBHOOK: end-of-call received for call {call_id}")
+
+        # Procesar en background para no bloquear la respuesta a Vapi
+        def process_async():
+            try:
+                from aria_audit import process_single_call_realtime
+                result = process_single_call_realtime(call_data)
+                if result:
+                    aria_log.info(f"VAPI WEBHOOK: call {call_id} audited — outcome={result.get('aria_outcome')} discrepancy={result.get('has_discrepancy')}")
+                else:
+                    aria_log.info(f"VAPI WEBHOOK: call {call_id} skipped (already audited or not ended)")
+            except Exception as e:
+                aria_log.error(f"VAPI WEBHOOK async error: {type(e).__name__}: {e}", exc_info=True)
+
+        thread = threading.Thread(target=process_async, daemon=True)
+        thread.start()
+
+        return jsonify({"ok": True, "call_id": call_id, "status": "processing"})
+
+    except Exception as e:
+        logging.getLogger("aria").error(f"VAPI WEBHOOK EXCEPTION: {e}", exc_info=True)
+        return jsonify({"ok": True})
+
+
+# ─── ARIA: Telegram Commands ──────────────────────────────────────────────────────────────────────
+@app.route("/aria/telegram/webhook", methods=["POST"])
+def aria_telegram_webhook_commands():
+    """
+    Extensión del webhook de Telegram para manejar comandos on-demand.
+    Los comandos /audit, /reporte, /errores, /eficacia, /score, /llamada
+    se procesan aquí y se delegan a aria_audit.telegram_handle_command.
+
+    NOTA: Esta ruta es ADICIONAL al webhook principal de Telegram (aria_telegram_webhook).
+    El webhook principal maneja callbacks de botones. Esta maneja mensajes de texto.
+    """
+    import os, logging, threading
+    aria_log = logging.getLogger("aria")
+
+    try:
+        data = request.get_json(force=True) or {}
+
+        # Si es un callback_query, lo maneja el webhook principal
+        if data.get("callback_query"):
+            return aria_telegram_webhook()
+
+        # Manejar mensajes de texto (comandos)
+        message = data.get("message") or data.get("edited_message")
+        if not message:
+            return jsonify({"ok": True})
+
+        text = message.get("text", "").strip()
+        chat_id = str(message.get("chat", {}).get("id", ""))
+
+        if not text or not text.startswith("/"):
+            return jsonify({"ok": True})
+
+        # Parsear comando y argumentos
+        parts = text.split(" ", 1)
+        command = parts[0].lower().split("@")[0]  # Remover @botname si existe
+        args = parts[1] if len(parts) > 1 else ""
+
+        aria_log.info(f"TELEGRAM COMMAND: {command} {args} from chat {chat_id}")
+
+        # Procesar en background
+        def handle_async():
+            try:
+                from aria_audit import telegram_handle_command
+                telegram_handle_command(command, args, chat_id)
+            except Exception as e:
+                aria_log.error(f"TELEGRAM COMMAND error: {e}", exc_info=True)
+                BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+                if BOT_TOKEN and chat_id:
+                    http_requests.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                        json={"chat_id": chat_id, "text": f"⚠️ Error: {str(e)[:100]}"},
+                        timeout=5
+                    )
+
+        thread = threading.Thread(target=handle_async, daemon=True)
+        thread.start()
+
+        return jsonify({"ok": True})
+
+    except Exception as e:
+        logging.getLogger("aria").error(f"TELEGRAM COMMANDS EXCEPTION: {e}", exc_info=True)
+        return jsonify({"ok": True})
+
+
+# ─── ARIA: Manual Report Triggers ─────────────────────────────────────────────────────────────────
+@app.route("/aria/report/daily", methods=["POST"])
+def aria_trigger_daily_report():
+    """Trigger manual del reporte diario (usado por el cron a las 8PM EDT)."""
+    import threading
+    def run_async():
+        try:
+            from aria_audit import run_daily_report
+            run_daily_report()
+        except Exception as e:
+            logging.getLogger("aria").error(f"Daily report error: {e}", exc_info=True)
+    threading.Thread(target=run_async, daemon=True).start()
+    return jsonify({"ok": True, "status": "daily report triggered"})
+
+
+@app.route("/aria/report/weekly", methods=["POST"])
+def aria_trigger_weekly_report():
+    """Trigger manual del reporte semanal (usado por el cron los domingos a las 8AM EDT)."""
+    import threading
+    def run_async():
+        try:
+            from aria_audit import run_weekly_report
+            run_weekly_report()
+        except Exception as e:
+            logging.getLogger("aria").error(f"Weekly report error: {e}", exc_info=True)
+    threading.Thread(target=run_async, daemon=True).start()
+    return jsonify({"ok": True, "status": "weekly report triggered"})
+
+
+@app.route("/aria/audit/run", methods=["POST"])
+def aria_trigger_audit():
+    """Trigger manual de un ciclo de auditoría (usado por el cron y on-demand)."""
+    import threading
+    data = request.get_json(force=True) or {}
+    hours_back = int(data.get("hours_back", 25))
+    def run_async():
+        try:
+            from aria_audit import run_audit
+            run_audit(hours_back=hours_back)
+        except Exception as e:
+            logging.getLogger("aria").error(f"Audit run error: {e}", exc_info=True)
+    threading.Thread(target=run_async, daemon=True).start()
+    return jsonify({"ok": True, "status": f"audit triggered for last {hours_back}h"})
+
+
 # ─── Health Check ──────────────────────────────────────────────────────────────────────────────────
 @app.route("/health", methods=["GET"])
 def health():
