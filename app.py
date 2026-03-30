@@ -124,7 +124,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.46"  # FIX I: ABSOLUTE PRIORITY RULE at top of prompt — 'quiero agendar' ALWAYS = check_availability, NEVER endCall
+SERVER_VERSION = "v17.47"  # FIX I: ABSOLUTE PRIORITY RULE at top of prompt — 'quiero agendar' ALWAYS = check_availability, NEVER endCall
                            # FIX B: reschedule_appointment success = outcome agendo (was no_agendo)
                            # FIX C/D/E: prompt — skip pitch if client already wants to book, no re-call check_availability, endCall post-despedida
 
