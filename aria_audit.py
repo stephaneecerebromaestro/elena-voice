@@ -534,6 +534,30 @@ def _send_call_detail(chat_id: str, call_id: str):
 
 
 # ============================================================
+# HELPERS
+# ============================================================
+
+def _to_bool(value) -> Optional[bool]:
+    """Convertir un valor a bool o None para columnas boolean de Supabase.
+    GHL puede devolver 'pending', 'true', 'false', True, False, None, etc.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ('true', '1', 'yes', 'si', 'sí'):
+            return True
+        if v in ('false', '0', 'no'):
+            return False
+        # Valores no reconocidos (ej: 'pending') → None para no romper el insert
+        return None
+    # int, float, etc.
+    return bool(value)
+
+
+# ============================================================
 # SUPABASE CLIENT (via REST API)
 # ============================================================
 
@@ -1086,7 +1110,7 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
         "call_duration_seconds": duration_seconds,
         "original_outcome": original_outcome,
         "original_ended_reason": call_data.get("endedReason"),
-        "original_success_eval": ghl_fields.get("elena_success_eval"),
+        "original_success_eval": _to_bool(ghl_fields.get("elena_success_eval")),
         "original_summary": call_data.get("summary"),
         "aria_outcome": aria_outcome,
         "aria_confidence": aria_confidence,
