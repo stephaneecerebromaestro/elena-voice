@@ -1957,6 +1957,79 @@ def run_weekly_report():
 
 
 # ============================================================
+# POLLING ACTIVO — Auditar llamadas sin depender del webhook
+# ============================================================
+import threading as _threading
+import time as _time
+
+_polling_started = False
+_polling_lock = _threading.Lock()
+
+
+def _aria_polling_loop(interval_seconds: int = 180):
+    """
+    Loop de polling activo: cada `interval_seconds` consulta Vapi por llamadas
+    terminadas en la ultima hora y audita las que no estan en Supabase.
+    Cubre inbound Twilio donde Vapi no envia el webhook end-of-call-report.
+    """
+    log.info(f"ARIA Polling iniciado — intervalo: {interval_seconds}s")
+    while True:
+        try:
+            _time.sleep(interval_seconds)
+            log.info("ARIA Polling: buscando llamadas no auditadas...")
+            calls = fetch_vapi_calls(hours_back=1, limit=30)
+            ended_calls = [c for c in calls if c.get("status") == "ended"]
+            if not ended_calls:
+                log.info("ARIA Polling: sin llamadas terminadas en la ultima hora")
+                continue
+            already_audited = get_already_audited_ids()
+            pending = [c for c in ended_calls if c.get("id") not in already_audited]
+            if not pending:
+                log.info(f"ARIA Polling: {len(ended_calls)} llamadas — todas ya auditadas")
+                continue
+            log.info(f"ARIA Polling: {len(pending)} llamadas pendientes de auditar")
+            for call_data in pending:
+                call_id = call_data.get("id", "?")
+                transcript = call_data.get("transcript", "") or ""
+                if len(transcript) < 50:
+                    log.info(f"ARIA Polling [{call_id}]: transcript muy corto ({len(transcript)} chars) — saltando")
+                    continue
+                try:
+                    log.info(f"ARIA Polling [{call_id}]: auditando...")
+                    result = process_call(call_data, already_audited)
+                    if result:
+                        log.info(f"ARIA Polling [{call_id}]: auditado — {result.get('audit_status')}")
+                        already_audited.add(call_id)
+                    else:
+                        log.info(f"ARIA Polling [{call_id}]: saltado por process_call")
+                except Exception as e:
+                    log.error(f"ARIA Polling [{call_id}]: error — {e}")
+        except Exception as e:
+            log.error(f"ARIA Polling loop error: {e}")
+
+
+def start_aria_polling(interval_seconds: int = 180):
+    """
+    Iniciar el loop de polling en un daemon thread.
+    Idempotente: solo inicia una vez aunque se llame varias veces.
+    """
+    global _polling_started
+    with _polling_lock:
+        if _polling_started:
+            log.info("ARIA Polling: ya iniciado, ignorando llamada duplicada")
+            return
+        _polling_started = True
+    t = _threading.Thread(
+        target=_aria_polling_loop,
+        args=(interval_seconds,),
+        daemon=True,
+        name="aria-polling"
+    )
+    t.start()
+    log.info(f"ARIA Polling thread iniciado (daemon) — intervalo {interval_seconds}s")
+
+
+# ============================================================
 # CLI
 # ============================================================
 

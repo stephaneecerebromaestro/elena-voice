@@ -2306,6 +2306,14 @@ def health():
     })
 
 
+# ─── ARIA Polling — Iniciar al arrancar el servidor ───────────────────────────
+try:
+    from aria_audit import start_aria_polling
+    start_aria_polling(interval_seconds=180)  # cada 3 minutos
+except Exception as _polling_err:
+    logging.getLogger("aria").error(f"Error iniciando ARIA Polling: {_polling_err}")
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)
