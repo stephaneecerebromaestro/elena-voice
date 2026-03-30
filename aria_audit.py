@@ -126,76 +126,147 @@ def telegram_send(text: str, reply_markup: dict = None, chat_id: str = None) -> 
         return None
 
 
-def telegram_notify_discrepancy(correction_id: str, call_id: str, phone: str,
-                                 original_outcome: str, aria_outcome: str,
-                                 confidence: float, reasoning: str,
-                                 errors: list, playbook_score: float,
-                                 contact_name: str = None,
-                                 call_ended_at: str = None) -> bool:
+def telegram_notify_call(
+    call_id: str,
+    phone: str,
+    original_outcome: str,
+    aria_outcome: str,
+    confidence: float,
+    reasoning: str,
+    errors: list,
+    playbook_score: float,
+    contact_name: str = None,
+    call_ended_at: str = None,
+    duration_seconds: int = None,
+    has_discrepancy: bool = False,
+    correction_id: str = None,
+) -> bool:
     """
-    Notificar a Juan sobre una discrepancia detectada por ARIA.
-    Incluye botones inline para APROBAR ✅ o RECHAZAR ❌ la corrección.
-    Muestra nombre del contacto y fecha/hora de la llamada.
+    Notificacion TOTAL por cada llamada completada (monitoreo total).
+    Tres niveles visuales:
+      ROJO     - DISCREPANCIA: GHL y ARIA no coinciden (requiere accion)
+      AMARILLO - ALERTA: Coinciden pero hay errores HIGH/CRITICAL de playbook
+      VERDE    - OK: Todo correcto, sin errores graves
+    Siempre incluye: nombre, hora, outcome, score, reasoning, errores.
+    Solo cuando hay discrepancia: botones APROBAR/RECHAZAR.
     """
-    confidence_pct = int(confidence * 100)
-    errors_text = ""
-    if errors:
-        errors_text = "\n" + "\n".join(
-            f"  • [{e.get('severity','?').upper()}] {e.get('type','?')}: {e.get('description','')[:80]}"
-            for e in errors[:4]
-        )
+    import pytz
+    confidence_pct = int((confidence or 0) * 100)
     playbook_text = f"{playbook_score*100:.0f}%" if playbook_score is not None else "N/A"
     phone_display = phone[-10:] if phone and len(phone) >= 10 else phone or "N/A"
 
-    # Nombre del contacto
-    name_line = f"👤 Contacto: <b>{contact_name}</b>\n" if contact_name else ""
+    # Nivel de alerta
+    high_errors = [e for e in (errors or []) if e.get("severity", "").upper() in ("HIGH", "CRITICAL")]
+    if has_discrepancy:
+        level_icon = "\U0001f534"
+        level_label = "DISCREPANCIA DETECTADA"
+    elif high_errors:
+        level_icon = "\U0001f7e1"
+        level_label = "ALERTA DE CALIDAD"
+    else:
+        level_icon = "\U0001f7e2"
+        level_label = "LLAMADA OK"
 
-    # Fecha y hora de la llamada (convertir de UTC a EDT)
+    # Nombre del contacto
+    name_line = ("\U0001f464 <b>" + contact_name + "</b>\n") if contact_name else ""
+
+    # Fecha/hora EDT
     datetime_line = ""
     if call_ended_at:
         try:
-            from datetime import timezone
-            import pytz
             edt = pytz.timezone("America/New_York")
-            # Vapi envía ISO 8601 con Z o +00:00
             dt_str = call_ended_at.replace("Z", "+00:00")
             dt_utc = datetime.fromisoformat(dt_str)
             dt_edt = dt_utc.astimezone(edt)
-            datetime_line = f"🕐 Llamada: <b>{dt_edt.strftime('%d/%m/%Y %I:%M %p')} EDT</b>\n"
+            datetime_line = "\U0001f550 " + dt_edt.strftime("%d/%m/%Y %I:%M %p") + " EDT"
         except Exception:
-            datetime_line = f"🕐 Llamada: <b>{call_ended_at[:16].replace('T', ' ')} UTC</b>\n"
+            datetime_line = "\U0001f550 " + call_ended_at[:16].replace("T", " ") + " UTC"
 
-    text = (
-        f"🔍 <b>ARIA detectó una discrepancia</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{name_line}"
-        f"📞 Teléfono: <code>+{phone_display}</code>\n"
-        f"{datetime_line}"
-        f"📋 GHL dice: <b>{original_outcome}</b>\n"
-        f"🤖 ARIA dice: <b>{aria_outcome}</b>\n"
-        f"📊 Confianza: <b>{confidence_pct}%</b> | Playbook: {playbook_text}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💬 <i>{reasoning[:300]}</i>"
-    )
-    if errors_text:
-        text += f"\n\n⚠️ <b>Errores detectados:</b>{errors_text}"
+    # Duracion
+    dur_text = ""
+    if duration_seconds:
+        m, s = divmod(int(duration_seconds), 60)
+        dur_text = f" \u00b7 {m}m{s:02d}s"
 
-    reply_markup = {
-        "inline_keyboard": [[
-            {
-                "text": f"✅ APROBAR ({original_outcome} → {aria_outcome})",
-                "callback_data": f"approve:{correction_id}"
-            }
-        ], [
-            {
-                "text": "❌ RECHAZAR (mantener clasificación original)",
-                "callback_data": f"reject:{correction_id}"
-            }
-        ]]
+    # Outcome labels
+    OUTCOME_LABELS = {
+        "agendo": "\u2705 Agendo",
+        "no_agendo": "\U0001f4cb No agendo",
+        "no_contesto": "\U0001f4f5 No contesto",
+        "llamar_luego": "\U0001f504 Llamar luego",
+        "error_tecnico": "\u2699\ufe0f Error tecnico",
+        "numero_invalido": "\U0001f6ab Numero invalido",
     }
+    aria_label = OUTCOME_LABELS.get(aria_outcome or "", aria_outcome or "?")
+    orig_label = OUTCOME_LABELS.get(original_outcome or "", original_outcome or "sin dato")
 
-    result = telegram_send(text, reply_markup)
+    # Errores de playbook
+    errors_section = ""
+    if errors:
+        severity_icon = {"CRITICAL": "\U0001f534", "HIGH": "\U0001f7e0", "MEDIUM": "\U0001f7e1", "LOW": "\u26aa"}
+        lines = [
+            "  " + severity_icon.get(e.get("severity","").upper(), chr(8226)) + " " + e.get("type","?") + ": " + e.get("description","")[:80]
+            for e in errors[:5]
+        ]
+        errors_section = "\n\n\u26a0\ufe0f <b>Errores de playbook:</b>\n" + "\n".join(lines)
+
+    # Cuerpo del mensaje
+    sep = "\u2501" * 24
+    header = level_icon + " <b>ARIA \u00b7 " + level_label + "</b>\n" + sep
+    meta = name_line + "\U0001f4de <code>+" + phone_display + "</code>  " + datetime_line + dur_text
+
+    if has_discrepancy:
+        outcome_block = (
+            "\U0001f4cb GHL: <b>" + orig_label + "</b>\n"
+            "\U0001f916 ARIA: <b>" + aria_label + "</b>  (" + str(confidence_pct) + "% confianza)\n"
+            "\U0001f4ca Playbook: " + playbook_text
+        )
+    else:
+        outcome_block = (
+            "\U0001f916 Outcome: <b>" + aria_label + "</b>  (" + str(confidence_pct) + "% confianza)\n"
+            "\U0001f4ca Playbook: " + playbook_text
+        )
+
+    reasoning_block = "\U0001f4ac <i>" + (reasoning or "")[:280] + "</i>" if reasoning else ""
+
+    full_text = "\n".join(filter(None, [header, meta, outcome_block, reasoning_block])) + errors_section
+
+    # Botones solo si hay discrepancia
+    reply_markup = None
+    if has_discrepancy and correction_id:
+        reply_markup = {
+            "inline_keyboard": [[
+                {
+                    "text": "\u2705 APROBAR correccion (" + (orig_label or "") + " \u2192 " + (aria_label or "") + ")",
+                    "callback_data": "approve:" + correction_id
+                }
+            ], [
+                {
+                    "text": "\u274c RECHAZAR (mantener GHL)",
+                    "callback_data": "reject:" + correction_id
+                }
+            ]]
+        }
+
+    result = telegram_send(full_text, reply_markup)
     return result is not None
+
+
+# Alias para compatibilidad con llamadas existentes a telegram_notify_discrepancy
+def telegram_notify_discrepancy(correction_id: str, call_id: str, phone: str,
+                                original_outcome: str, aria_outcome: str,
+                                confidence: float, reasoning: str,
+                                errors: list, playbook_score: float,
+                                contact_name: str = None,
+                                call_ended_at: str = None) -> bool:
+    return telegram_notify_call(
+        call_id=call_id, phone=phone,
+        original_outcome=original_outcome, aria_outcome=aria_outcome,
+        confidence=confidence, reasoning=reasoning,
+        errors=errors, playbook_score=playbook_score,
+        contact_name=contact_name, call_ended_at=call_ended_at,
+        has_discrepancy=True, correction_id=correction_id,
+    )
 
 
 def telegram_send_daily_report(metrics: dict, audit_date: str, top_errors: list,
@@ -1168,6 +1239,8 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
     # Guardar en Supabase
     saved = supabase_upsert("call_audits", audit_record)
 
+    # ── Guardar corrección en Supabase si hay discrepancia ──────────────────
+    _correction_id = None
     if saved and has_discrepancy and ghl_contact_id:
         correction_record = {
             "audit_id": saved.get("id"),
@@ -1179,11 +1252,14 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
             "correction_status": "pending"
         }
         correction_saved = supabase_insert("aria_corrections", correction_record)
-
         if correction_saved:
-            correction_id = correction_saved.get("id", "")
-            telegram_notify_discrepancy(
-                correction_id=correction_id,
+            _correction_id = correction_saved.get("id", "")
+            log.info(f"Correction record created: {_correction_id}")
+
+    # ── Notificación Telegram SIEMPRE (monitoreo total) ──────────────────────
+    if saved:
+        try:
+            telegram_notify_call(
                 call_id=call_id,
                 phone=phone,
                 original_outcome=original_outcome,
@@ -1194,8 +1270,13 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
                 playbook_score=audit_result.get("playbook_adherence_score"),
                 contact_name=ghl_fields.get("contact_full_name"),
                 call_ended_at=ended_at,
+                duration_seconds=duration_seconds,
+                has_discrepancy=has_discrepancy,
+                correction_id=_correction_id,
             )
-            log.info(f"Telegram notification sent for correction {correction_id}")
+            log.info(f"Telegram notification sent — discrepancy={has_discrepancy} correction={_correction_id}")
+        except Exception as _tg_err:
+            log.error(f"Telegram notify error: {_tg_err}")
 
     return {
         "call_id": call_id,
