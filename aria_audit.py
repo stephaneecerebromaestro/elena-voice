@@ -1025,9 +1025,94 @@ Responde SIEMPRE en JSON válido con esta estructura exacta:
 }"""
 
 
+def get_recent_feedback(limit: int = 10) -> list:
+    """
+    Obtiene los últimos N feedbacks aprobados/rechazados de Supabase.
+    Retorna lista de dicts con los campos relevantes para few-shot.
+    Solo incluye feedbacks con datos completos (excluye tests y nulos).
+    Preparado para escalar: acepta parámetro limit para ajustar volumen.
+    """
+    try:
+        rows = supabase_query(
+            "feedback_log",
+            f"select=feedback_type,original_outcome,aria_outcome,final_outcome,vapi_call_id"
+            f"&order=created_at.desc"
+            f"&limit={limit * 2}"  # pedimos el doble para filtrar nulos y tests
+        )
+        examples = []
+        for r in rows:
+            # Excluir filas con datos incompletos
+            if not all([r.get("original_outcome"), r.get("aria_outcome"), r.get("final_outcome")]):
+                continue
+            # Excluir call_ids de test
+            call_id = r.get("vapi_call_id", "") or ""
+            if call_id.startswith("test-") or call_id.startswith("audit-test"):
+                continue
+            examples.append({
+                "feedback_type": r.get("feedback_type"),
+                "original_outcome": r.get("original_outcome"),
+                "aria_outcome": r.get("aria_outcome"),
+                "final_outcome": r.get("final_outcome"),
+            })
+            if len(examples) >= limit:
+                break
+        log.info(f"Few-shot: {len(examples)} feedbacks cargados de Supabase")
+        return examples
+    except Exception as e:
+        log.warning(f"Few-shot: no se pudo cargar feedback_log: {e}")
+        return []
+
+
+def build_fewshot_block(examples: list) -> str:
+    """
+    Construye el bloque de few-shot para inyectar en el user_prompt.
+    Formato legible para Claude: cada ejemplo muestra qué clasificó ARIA,
+    qué decidió Juan y qué lección extraer.
+    """
+    if not examples:
+        return ""
+
+    OUTCOME_LABELS = {
+        "agendo": "agendó cita",
+        "no_agendo": "no agendó (conversación real)",
+        "no_contesto": "no contestó / llamada sin conversación",
+        "llamar_luego": "pidió que lo llamen después",
+        "no_interesado": "rechazó el servicio explícitamente",
+        "callback": "programó un callback",
+    }
+
+    lines = ["\n## DECISIONES PREVIAS DE JUAN (aprende de estos ejemplos):\n"]
+    lines.append("Estos son casos reales donde Juan revisó la clasificación de ARIA y tomó una decisión.")
+    lines.append("Usa estos ejemplos para calibrar tu clasificación en la llamada actual.\n")
+
+    for i, ex in enumerate(examples, 1):
+        fb_type = ex["feedback_type"]
+        orig = ex["original_outcome"]
+        aria = ex["aria_outcome"]
+        final = ex["final_outcome"]
+        orig_label = OUTCOME_LABELS.get(orig, orig)
+        aria_label = OUTCOME_LABELS.get(aria, aria)
+        final_label = OUTCOME_LABELS.get(final, final)
+
+        if fb_type == "approved":
+            decision = f"APROBÓ → cambió a '{final_label}'"
+            lesson = f"Cuando GHL dice '{orig_label}', ARIA tiene razón al clasificar como '{aria_label}'."
+        else:  # rejected
+            decision = f"RECHAZÓ → mantuvo '{orig_label}'"
+            lesson = f"Cuando GHL dice '{orig_label}', NO cambiar a '{aria_label}' — mantener '{orig_label}'."
+
+        lines.append(f"Ejemplo {i}: GHL={orig_label} | ARIA clasificó={aria_label} | Juan: {decision}")
+        lines.append(f"  → Lección: {lesson}")
+
+    lines.append("\nAplica estas lecciones al analizar la llamada actual.")
+    return "\n".join(lines)
+
+
 def audit_call_with_claude(call_data: dict) -> dict:
     """
-    Auditar una llamada usando Claude.
+    Auditar una llamada usando Claude con few-shot dinámico.
+    Antes de auditar, carga los últimos feedbacks de Supabase
+    y los inyecta como ejemplos en el prompt para mejorar precisión.
     Retorna el resultado del análisis.
     """
     call_id = call_data.get("id", "unknown")
@@ -1063,6 +1148,10 @@ def audit_call_with_claude(call_data: dict) -> dict:
                 result_str = str(msg.get("result", ""))[:300]
                 tool_calls_summary[-1]["result"] = result_str
 
+    # Few-shot dinámico: cargar decisiones previas de Juan desde Supabase
+    recent_feedback = get_recent_feedback(limit=10)
+    fewshot_block = build_fewshot_block(recent_feedback)
+
     user_prompt = f"""Analiza esta llamada de Elena y determina el outcome correcto.
 
 ## DATOS DE LA LLAMADA:
@@ -1079,7 +1168,7 @@ def audit_call_with_claude(call_data: dict) -> dict:
 
 ## TOOL CALLS EJECUTADOS:
 {json.dumps(tool_calls_summary, ensure_ascii=False, indent=2)[:2000] if tool_calls_summary else "(ninguno)"}
-
+{fewshot_block}
 Analiza todo lo anterior y responde en JSON con el formato especificado."""
 
     try:
