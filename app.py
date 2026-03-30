@@ -2313,6 +2313,13 @@ try:
 except Exception as _polling_err:
     logging.getLogger("aria").error(f"Error iniciando ARIA Polling: {_polling_err}")
 
+# ─── ARIA Weekly Cron — Reporte de errores cada sábado 9:00 AM EDT ──────────
+try:
+    from aria_audit import start_weekly_cron
+    start_weekly_cron()
+except Exception as _weekly_err:
+    logging.getLogger("aria").error(f"Error iniciando ARIA Weekly Cron: {_weekly_err}")
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))

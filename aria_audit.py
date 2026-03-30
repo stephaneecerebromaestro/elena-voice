@@ -2119,6 +2119,214 @@ def start_aria_polling(interval_seconds: int = 180):
 
 
 # ============================================================
+# REPORTE SEMANAL DE ERRORES — SÁBADOS
+# ============================================================
+
+_weekly_cron_started = False
+_weekly_cron_lock = _threading.Lock()
+
+
+def run_weekly_error_report():
+    """
+    Analiza los últimos 7 días de call_audits, identifica errores HIGH/CRITICAL
+    con ≥ 3 ocurrencias, y envía un reporte por Telegram con evidencia concreta
+    (transcripts reales, frecuencia, impacto) para que Juan aplique los fixes.
+
+    Se ejecuta automáticamente cada sábado. También puede llamarse manualmente.
+    """
+    import json as _json
+    from collections import Counter, defaultdict
+
+    log.info("Iniciando reporte semanal de errores de Elena...")
+
+    # Ventana: últimos 7 días
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    today_str = datetime.now(timezone.utc).strftime("%d/%m/%Y")
+    week_start = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%d/%m/%Y")
+
+    rows = supabase_query(
+        "call_audits",
+        f"created_at=gte.{cutoff}&select=errors_detected,aria_outcome,transcript_text,vapi_call_id,call_started_at&limit=500"
+    )
+
+    if not rows:
+        telegram_send(
+            f"ℹ️ <b>Reporte semanal de errores</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Período: {week_start} → {today_str}\n"
+            f"Sin llamadas auditadas esta semana."
+        )
+        return
+
+    # Recopilar todos los errores con contexto
+    error_data = defaultdict(list)  # error_type -> list of {severity, description, transcript_snippet, call_id, outcome}
+
+    for row in rows:
+        errs = row.get("errors_detected") or []
+        if isinstance(errs, str):
+            try: errs = _json.loads(errs)
+            except: errs = []
+
+        transcript = (row.get("transcript_text") or "")[:600]
+        call_id = row.get("vapi_call_id", "")[:8]
+        outcome = row.get("aria_outcome", "?")
+
+        for e in errs:
+            if not isinstance(e, dict):
+                continue
+            err_type = e.get("type", "?")
+            severity = (e.get("severity") or "medium").upper()
+            description = e.get("description", "")[:200]
+
+            # Excluir errores técnicos de infraestructura y tests
+            if err_type in ("technical_failure", "test_call"):
+                continue
+
+            error_data[err_type].append({
+                "severity": severity,
+                "description": description,
+                "transcript_snippet": transcript[:300] if transcript else "",
+                "call_id": call_id,
+                "outcome": outcome,
+            })
+
+    if not error_data:
+        telegram_send(
+            f"✅ <b>Reporte semanal de errores</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Período: {week_start} → {today_str}\n"
+            f"Llamadas auditadas: {len(rows)}\n\n"
+            f"Sin errores detectados esta semana. Elena está funcionando correctamente."
+        )
+        return
+
+    # Ordenar por frecuencia y filtrar los que tienen ≥ 3 ocurrencias
+    sorted_errors = sorted(error_data.items(), key=lambda x: len(x[1]), reverse=True)
+    recurring = [(t, data) for t, data in sorted_errors if len(data) >= 3]
+    occasional = [(t, data) for t, data in sorted_errors if len(data) < 3]
+
+    # Calcular severidad dominante por tipo
+    def dominant_severity(data):
+        counts = Counter(d["severity"] for d in data)
+        for s in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+            if counts.get(s, 0) > 0:
+                return s
+        return "MEDIUM"
+
+    # Total de llamadas y errores
+    total_calls = len(rows)
+    total_errors = sum(len(v) for v in error_data.values())
+
+    # Construir el mensaje principal
+    lines = [
+        f"📊 <b>ARIA · REPORTE SEMANAL DE ERRORES</b>",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📅 Período: {week_start} → {today_str}",
+        f"📞 Llamadas auditadas: {total_calls} | Errores detectados: {total_errors}",
+        f"",
+    ]
+
+    if recurring:
+        lines.append(f"🔴 <b>ERRORES RECURRENTES (≥3 veces) — REQUIEREN FIX:</b>")
+        for err_type, data in recurring:
+            sev = dominant_severity(data)
+            count = len(data)
+            sev_icon = "🔴" if sev in ("CRITICAL", "HIGH") else "🟡"
+            # Tomar la descripción más representativa (la más larga)
+            best_desc = max(data, key=lambda d: len(d["description"]))["description"]
+            # Ejemplo real: el transcript más relevante
+            with_transcript = [d for d in data if d["transcript_snippet"]]
+            example_line = ""
+            if with_transcript:
+                snippet = with_transcript[0]["transcript_snippet"][:200].replace("\n", " ")
+                example_line = f"\n   💬 Ejemplo: <i>{snippet}...</i>"
+
+            lines.append(
+                f"\n{sev_icon} <b>{err_type}</b> ×{count} | {sev}"
+                f"\n   {best_desc}"
+                f"{example_line}"
+            )
+        lines.append("")
+
+    if occasional:
+        lines.append(f"🟡 <b>Errores ocasionales (1-2 veces):</b>")
+        for err_type, data in occasional:
+            sev = dominant_severity(data)
+            count = len(data)
+            lines.append(f"  • {err_type} ×{count} [{sev}]")
+        lines.append("")
+
+    if recurring:
+        lines.append(
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💡 Hay <b>{len(recurring)} error(es) recurrente(s)</b> que requieren fix en el prompt de Elena.\n"
+            f"Compártelo con Manus para aplicar las correcciones."
+        )
+    else:
+        lines.append(
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ Sin errores recurrentes esta semana. Todos los errores son casos aislados."
+        )
+
+    full_message = "\n".join(lines)
+
+    # Telegram tiene límite de 4096 caracteres por mensaje
+    if len(full_message) > 4000:
+        full_message = full_message[:3950] + "\n\n... (mensaje truncado, ver Supabase para detalle completo)"
+
+    result = telegram_send(full_message)
+    if result:
+        log.info(f"Reporte semanal enviado: {len(recurring)} errores recurrentes, {len(occasional)} ocasionales")
+    else:
+        log.error("Reporte semanal: fallo al enviar por Telegram")
+
+
+def _weekly_cron_loop():
+    """
+    Loop daemon que verifica cada hora si es sábado entre 9:00-9:59 AM EDT
+    y ejecuta el reporte semanal una vez por semana.
+    """
+    import pytz
+    _last_run_week = None  # número de semana ISO del último reporte enviado
+
+    while True:
+        try:
+            now_edt = datetime.now(pytz.timezone("America/New_York"))
+            week_number = now_edt.isocalendar()[1]
+
+            # Sábado = weekday 5, entre 9:00 y 9:59 AM EDT
+            if now_edt.weekday() == 5 and now_edt.hour == 9 and _last_run_week != week_number:
+                log.info(f"Ejecutando reporte semanal de errores (semana {week_number})...")
+                run_weekly_error_report()
+                _last_run_week = week_number
+
+        except Exception as e:
+            log.error(f"Error en weekly cron loop: {e}")
+
+        _threading.Event().wait(3600)  # verificar cada hora
+
+
+def start_weekly_cron():
+    """
+    Iniciar el cron semanal en un daemon thread.
+    Idempotente: solo inicia una vez aunque se llame varias veces.
+    """
+    global _weekly_cron_started
+    with _weekly_cron_lock:
+        if _weekly_cron_started:
+            log.info("Weekly cron: ya iniciado, ignorando llamada duplicada")
+            return
+        _weekly_cron_started = True
+    t = _threading.Thread(
+        target=_weekly_cron_loop,
+        daemon=True,
+        name="aria-weekly-cron"
+    )
+    t.start()
+    log.info("ARIA Weekly cron thread iniciado (daemon) — reporte cada sábado 9:00 AM EDT")
+
+
+# ============================================================
 # CLI
 # ============================================================
 
