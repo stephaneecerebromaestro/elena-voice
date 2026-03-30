@@ -1802,6 +1802,7 @@ def aria_telegram_webhook():
         message_id = message.get("message_id")
 
         TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", str(chat_id or ""))
 
         # Parsear el callback: "approve:<correction_id>" o "reject:<correction_id>"
         if ":" not in callback_data:
