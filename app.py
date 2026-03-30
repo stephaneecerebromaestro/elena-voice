@@ -2058,6 +2058,78 @@ def aria_pending_corrections():
     return jsonify({"error": r.text[:200]}), 500
 
 
+# ─── ARIA Diagnóstico ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/aria/diag/webhook", methods=["POST"])
+def aria_diag_webhook():
+    """
+    Endpoint de diagnóstico: ejecuta exactamente el mismo código del webhook
+    y devuelve el resultado completo incluyendo errores.
+    """
+    import os, traceback as tb
+    data = request.get_json(force=True) or {}
+    correction_id = data.get("correction_id", "")
+    approved = data.get("approved", False)
+
+    result = {"correction_id": correction_id, "approved": approved}
+
+    try:
+        SUPA_URL = os.environ.get("SUPABASE_URL", "")
+        SUPA_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        GHL_TOKEN = os.environ.get("GHL_PIT", "")
+
+        result["env"] = {
+            "SUPA_URL": SUPA_URL[:30] if SUPA_URL else "EMPTY",
+            "SUPA_KEY": SUPA_KEY[:20] + "..." if SUPA_KEY else "EMPTY",
+            "GHL_TOKEN": GHL_TOKEN[:15] + "..." if GHL_TOKEN else "EMPTY"
+        }
+
+        if not SUPA_KEY:
+            result["error"] = "SUPABASE_SERVICE_KEY vacío"
+            return jsonify(result), 500
+
+        # Obtener corrección
+        r = requests.get(
+            f"{SUPA_URL}/rest/v1/aria_corrections",
+            headers={"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}"},
+            params={"id": f"eq.{correction_id}", "select": "*"},
+            timeout=10
+        )
+        result["supa_get_status"] = r.status_code
+        result["supa_get_body"] = r.json() if r.status_code == 200 else r.text[:200]
+
+        if r.status_code != 200 or not r.json():
+            result["error"] = "Corrección no encontrada"
+            return jsonify(result), 404
+
+        correction = r.json()[0]
+        result["correction"] = correction
+
+        if correction.get("correction_status") != "pending":
+            result["error"] = f"Ya procesada: {correction.get('correction_status')}"
+            return jsonify(result), 200
+
+        # Patch Supabase
+        patch_data = {"correction_status": "reverted" if not approved else "applied"}
+        rp = requests.patch(
+            f"{SUPA_URL}/rest/v1/aria_corrections",
+            headers={"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"},
+            params={"id": f"eq.{correction_id}"},
+            json=patch_data,
+            timeout=10
+        )
+        result["supa_patch_status"] = rp.status_code
+        result["supa_patch_ok"] = rp.status_code in (200, 204)
+        result["success"] = True
+
+    except Exception as e:
+        result["exception"] = type(e).__name__
+        result["exception_msg"] = str(e)
+        result["traceback"] = tb.format_exc()
+
+    return jsonify(result)
+
+
 # ─── Health Check ──────────────────────────────────────────────────────────────────────────────────
 @app.route("/health", methods=["GET"])
 def health():
