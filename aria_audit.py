@@ -1216,9 +1216,20 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
 def process_single_call_realtime(call_data: dict) -> Optional[dict]:
     """
     Procesar una llamada individual en tiempo real (disparado por webhook de Vapi).
-    Igual que process_call pero sin verificar already_audited (ya se verifica antes).
+    El webhook end-of-call-report garantiza que la llamada ya terminó, pero Vapi
+    NO siempre incluye el campo 'status' en el payload del webhook.
+    Inyectamos status='ended' si no viene para evitar el filtro en process_call.
     """
     call_id = call_data.get("id")
+    status_in_payload = call_data.get("status")
+    if not status_in_payload:
+        # El webhook end-of-call-report garantiza que la llamada terminó
+        # Vapi omite 'status' del payload del webhook — lo inyectamos
+        call_data = dict(call_data)  # copia para no mutar el original
+        call_data["status"] = "ended"
+        log.info(f"process_single_call_realtime [{call_id}]: status no vino en webhook, inyectado como 'ended'")
+    else:
+        log.info(f"process_single_call_realtime [{call_id}]: status en webhook = '{status_in_payload}'")
     already_audited = get_already_audited_ids()
     return process_call(call_data, already_audited)
 
