@@ -1802,7 +1802,7 @@ def aria_telegram_webhook():
 
         def tg_answer(text):
             try:
-                requests.post(
+                http_requests.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
                     json={"callback_query_id": callback_id, "text": text},
                     timeout=5
@@ -1812,7 +1812,7 @@ def aria_telegram_webhook():
 
         def tg_send(text):
             try:
-                requests.post(
+                http_requests.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                     json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
                     timeout=5
@@ -1822,7 +1822,7 @@ def aria_telegram_webhook():
 
         def tg_edit(text):
             try:
-                requests.post(
+                http_requests.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
                     json={
                         "chat_id": chat_id,
@@ -1837,7 +1837,7 @@ def aria_telegram_webhook():
                 pass
 
         def supa_get(correction_id):
-            r = requests.get(
+            r = http_requests.get(
                 f"{SUPA_URL}/rest/v1/aria_corrections",
                 headers={"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}"},
                 params={"id": f"eq.{correction_id}", "select": "*"},
@@ -1848,7 +1848,7 @@ def aria_telegram_webhook():
             return None
 
         def supa_patch(table, filter_key, filter_val, data):
-            r = requests.patch(
+            r = http_requests.patch(
                 f"{SUPA_URL}/rest/v1/{table}",
                 headers={
                     "apikey": SUPA_KEY,
@@ -1862,7 +1862,7 @@ def aria_telegram_webhook():
             return r.status_code in (200, 204)
 
         def ghl_update(contact_id, new_outcome):
-            r = requests.put(
+            r = http_requests.put(
                 f"https://services.leadconnectorhq.com/contacts/{contact_id}",
                 headers={
                     "Authorization": f"Bearer {GHL_TOKEN}",
@@ -1937,7 +1937,7 @@ def aria_telegram_webhook():
 
         # Insertar en feedback_log
         try:
-            requests.post(
+            http_requests.post(
                 f"{SUPA_URL}/rest/v1/feedback_log",
                 headers={
                     "apikey": SUPA_KEY,
@@ -2089,7 +2089,7 @@ def aria_diag_webhook():
             return jsonify(result), 500
 
         # Obtener corrección
-        r = requests.get(
+        r = http_requests.get(
             f"{SUPA_URL}/rest/v1/aria_corrections",
             headers={"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}"},
             params={"id": f"eq.{correction_id}", "select": "*"},
@@ -2111,7 +2111,7 @@ def aria_diag_webhook():
 
         # Patch Supabase
         patch_data = {"correction_status": "reverted" if not approved else "applied"}
-        rp = requests.patch(
+        rp = http_requests.patch(
             f"{SUPA_URL}/rest/v1/aria_corrections",
             headers={"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"},
             params={"id": f"eq.{correction_id}"},
