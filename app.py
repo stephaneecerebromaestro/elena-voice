@@ -1656,6 +1656,18 @@ def vapi_server_url():
             # where synchronous processing would block all workers and cause Vapi timeouts.
             t = threading.Thread(target=_process_end_of_call, args=(message,), daemon=True)
             t.start()
+
+            # ARIA: auditar la llamada en tiempo real (thread separado, no bloquea)
+            try:
+                call_data = message.get("call") or message
+                aria_t = threading.Thread(
+                    target=lambda: __import__('aria_audit').process_single_call_realtime(call_data),
+                    daemon=True
+                )
+                aria_t.start()
+            except Exception:
+                pass  # ARIA nunca bloquea ni rompe el flujo principal
+
             return jsonify({"status": "ok"}), 200, cors
 
         elif message_type in ["status-update", "hang", "speech-update", "transcript"]:
