@@ -1108,6 +1108,7 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
             "status": call_data.get("status"),
             "cost": call_data.get("cost"),
         }
+        # NOTE: has_discrepancy columna no existe en Supabase — se calcula en memoria como (aria_outcome != original_outcome)
     }
 
     # Guardar en Supabase
