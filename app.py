@@ -1772,97 +1772,226 @@ def update_date():
 def aria_telegram_webhook():
     """
     Webhook de Telegram para recibir los callbacks de los botones inline.
-    Cuando Juan toca ✅ APROBAR o ❌ RECHAZAR en Telegram, Telegram envía
-    un callback_query a este endpoint.
-    
-    Configurar el webhook en Telegram:
-    POST https://api.telegram.org/bot<TOKEN>/setWebhook
-    {"url": "https://elena-pdem.onrender.com/aria/telegram/webhook"}
+    Cuando Juan toca APROBAR o RECHAZAR, ejecuta la corrección directamente
+    via HTTP requests a Supabase y GHL — sin importar aria_audit.
     """
-    import sys
-    import os
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import os, logging
+    aria_log = logging.getLogger("aria")
 
     try:
         data = request.get_json(force=True)
         if not data:
             return jsonify({"ok": True})
 
-        # Procesar callback_query (cuando Juan toca un botón)
         callback_query = data.get("callback_query")
         if not callback_query:
-            # Mensaje de texto normal — ignorar
             return jsonify({"ok": True})
 
-        callback_id = callback_query.get("id")
+        callback_id   = callback_query.get("id")
         callback_data = callback_query.get("data", "")
-        from_user = callback_query.get("from", {})
-        message = callback_query.get("message", {})
-        chat_id = message.get("chat", {}).get("id")
-        message_id = message.get("message_id")
+        from_user     = callback_query.get("from", {})
+        message       = callback_query.get("message", {})
+        chat_id       = message.get("chat", {}).get("id")
+        message_id    = message.get("message_id")
 
-        TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", str(chat_id or ""))
+        # Leer credenciales directamente del entorno en tiempo de ejecución
+        BOT_TOKEN      = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        SUPA_URL       = os.environ.get("SUPABASE_URL", "")
+        SUPA_KEY       = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        GHL_TOKEN      = os.environ.get("GHL_PIT", "")
 
-        # Parsear el callback: "approve:<correction_id>" o "reject:<correction_id>"
-        if ":" not in callback_data:
-            requests.post(
-                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
-                json={"callback_query_id": callback_id, "text": "Formato inválido"}
+        def tg_answer(text):
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+                    json={"callback_query_id": callback_id, "text": text},
+                    timeout=5
+                )
+            except Exception:
+                pass
+
+        def tg_send(text):
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                    timeout=5
+                )
+            except Exception:
+                pass
+
+        def tg_edit(text):
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
+                    json={
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "text": text[:4096],
+                        "parse_mode": "HTML",
+                        "reply_markup": {"inline_keyboard": []}
+                    },
+                    timeout=5
+                )
+            except Exception:
+                pass
+
+        def supa_get(correction_id):
+            r = requests.get(
+                f"{SUPA_URL}/rest/v1/aria_corrections",
+                headers={"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}"},
+                params={"id": f"eq.{correction_id}", "select": "*"},
+                timeout=10
             )
+            if r.status_code == 200 and r.json():
+                return r.json()[0]
+            return None
+
+        def supa_patch(table, filter_key, filter_val, data):
+            r = requests.patch(
+                f"{SUPA_URL}/rest/v1/{table}",
+                headers={
+                    "apikey": SUPA_KEY,
+                    "Authorization": f"Bearer {SUPA_KEY}",
+                    "Content-Type": "application/json"
+                },
+                params={filter_key: f"eq.{filter_val}"},
+                json=data,
+                timeout=10
+            )
+            return r.status_code in (200, 204)
+
+        def ghl_update(contact_id, new_outcome):
+            r = requests.put(
+                f"https://services.leadconnectorhq.com/contacts/{contact_id}",
+                headers={
+                    "Authorization": f"Bearer {GHL_TOKEN}",
+                    "Version": "2021-07-28",
+                    "Content-Type": "application/json"
+                },
+                json={"customFields": [{"key": "elena_last_outcome", "field_value": new_outcome}]},
+                timeout=10
+            )
+            return r.status_code in (200, 201)
+
+        # Validar formato del callback
+        if ":" not in callback_data:
+            tg_answer("Formato inválido")
             return jsonify({"ok": True})
 
         action, correction_id = callback_data.split(":", 1)
         approved = (action == "approve")
 
-        # Responder inmediatamente a Telegram (evita el spinner)
-        action_text = "✅ Procesando aprobación..." if approved else "❌ Procesando rechazo..."
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
-            json={"callback_query_id": callback_id, "text": action_text},
-            timeout=5
-        )
+        # Responder inmediatamente a Telegram (quita el spinner)
+        tg_answer("✅ Procesando..." if approved else "❌ Procesando...")
 
-        # Ejecutar apply_correction con recarga del módulo para garantizar env vars frescas
-        import logging, importlib, sys
-        aria_log = logging.getLogger("aria")
+        aria_log.info(f"WEBHOOK: action={action} correction_id={correction_id}")
+
+        # Validar credenciales
+        if not SUPA_KEY or not SUPA_URL:
+            aria_log.error("WEBHOOK: SUPABASE_SERVICE_KEY o SUPABASE_URL no configurados")
+            tg_send("⚠️ Error interno: credenciales de Supabase no disponibles.")
+            return jsonify({"ok": True})
+
+        # Obtener la corrección de Supabase
+        correction = supa_get(correction_id)
+        if not correction:
+            aria_log.error(f"WEBHOOK: corrección {correction_id} no encontrada")
+            tg_send(f"⚠️ Corrección no encontrada: {correction_id[:8]}...")
+            return jsonify({"ok": True})
+
+        current_status = correction.get("correction_status")
+        if current_status != "pending":
+            aria_log.warning(f"WEBHOOK: corrección {correction_id[:8]} ya procesada (status={current_status})")
+            tg_send(f"ℹ️ Esta corrección ya fue procesada (status: {current_status}).")
+            return jsonify({"ok": True})
+
+        ghl_contact_id = correction.get("ghl_contact_id")
+        old_value      = correction.get("old_value")
+        new_value      = correction.get("new_value")
+        audit_id       = correction.get("audit_id")
+        vapi_call_id   = correction.get("vapi_call_id")
+
+        if approved:
+            # Aplicar en GHL
+            ghl_ok = ghl_update(ghl_contact_id, new_value) if GHL_TOKEN else False
+            new_status = "applied" if ghl_ok else "pending"
+            ghl_code   = 200 if ghl_ok else 500
+            aria_log.info(f"WEBHOOK: GHL update {'OK' if ghl_ok else 'FAILED'} for contact {ghl_contact_id}")
+
+            # Actualizar audit_status
+            if ghl_ok and audit_id:
+                supa_patch("call_audits", "id", audit_id, {"audit_status": "feedback_approved"})
+        else:
+            new_status = "reverted"
+            ghl_code   = None
+            ghl_ok     = True
+            if audit_id:
+                supa_patch("call_audits", "id", audit_id, {"audit_status": "feedback_rejected"})
+
+        # Actualizar corrección en Supabase
+        supa_patch("aria_corrections", "id", correction_id, {
+            "correction_status": new_status,
+            "ghl_response_code": ghl_code
+        })
+
+        # Insertar en feedback_log
         try:
-            # Forzar recarga del módulo para que lea las env vars en tiempo de ejecución
-            if 'aria_audit' in sys.modules:
-                importlib.reload(sys.modules['aria_audit'])
-            from aria_audit import apply_correction
-            aria_log.info(f"Ejecutando apply_correction: id={correction_id} approved={approved}")
-            result = apply_correction(correction_id, approved)
-            aria_log.info(f"apply_correction resultado: {result}")
-            # Editar el mensaje original para reflejar la decisión
-            if message_id and chat_id:
-                status_icon = "✅ APROBADO" if approved else "❌ RECHAZADO"
-                original_text = message.get("text", "")
-                new_text = f"{original_text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n<b>{status_icon}</b> por {from_user.get('first_name', 'Juan')}"
-                requests.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
-                    json={
-                        "chat_id": chat_id,
-                        "message_id": message_id,
-                        "text": new_text[:4096],
-                        "parse_mode": "HTML",
-                        "reply_markup": {"inline_keyboard": []}  # Remover botones
-                    },
-                    timeout=5
-                )
-        except Exception as e:
-            aria_log.error(f"apply_correction EXCEPTION: {type(e).__name__}: {e}", exc_info=True)
             requests.post(
-                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                json={"chat_id": TELEGRAM_CHAT_ID, "text": f"⚠️ Error en apply_correction:\n{type(e).__name__}: {str(e)[:200]}"},
+                f"{SUPA_URL}/rest/v1/feedback_log",
+                headers={
+                    "apikey": SUPA_KEY,
+                    "Authorization": f"Bearer {SUPA_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal"
+                },
+                json={
+                    "audit_id": audit_id,
+                    "vapi_call_id": vapi_call_id,
+                    "feedback_type": "approved" if approved else "rejected",
+                    "feedback_source": "telegram",
+                    "original_outcome": old_value,
+                    "aria_outcome": new_value,
+                    "final_outcome": new_value if approved else old_value,
+                    "notes": f"Telegram: {'aprobado' if approved else 'rechazado'} por {from_user.get('first_name', 'Juan')}"
+                },
                 timeout=5
             )
+        except Exception:
+            pass  # feedback_log no es crítico
 
+        # Notificar resultado a Juan
+        call_short = (vapi_call_id or "")[:20]
+        if approved and ghl_ok:
+            result_text = (
+                f"✅ <b>Corrección aplicada en GHL</b>\n"
+                f"<code>{call_short}...</code>\n"
+                f"Outcome: <b>{old_value}</b> → <b>{new_value}</b>"
+            )
+        elif approved and not ghl_ok:
+            result_text = (
+                f"⚠️ <b>Aprobado pero GHL devolvió error</b>\n"
+                f"Corrección marcada como pendiente. Revisa Supabase."
+            )
+        else:
+            result_text = (
+                f"❌ <b>Corrección rechazada</b>\n"
+                f"<code>{call_short}...</code>\n"
+                f"Se mantiene: <b>{old_value}</b>"
+            )
+
+        tg_send(result_text)
+
+        # Editar el mensaje original para remover los botones
+        original_text = message.get("text", "")
+        status_label  = "✅ APROBADO" if approved else "❌ RECHAZADO"
+        tg_edit(f"{original_text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n<b>{status_label}</b> por {from_user.get('first_name', 'Juan')}")
+
+        aria_log.info(f"WEBHOOK: correction {correction_id[:8]} → {new_status}")
         return jsonify({"ok": True})
 
     except Exception as e:
-        import logging
-        logging.getLogger("aria").error(f"Telegram webhook error: {e}")
+        aria_log.error(f"WEBHOOK EXCEPTION: {type(e).__name__}: {e}", exc_info=True)
         return jsonify({"ok": True})  # Siempre 200 a Telegram
 
 
