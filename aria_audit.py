@@ -1346,26 +1346,28 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
             log.info(f"Correction record created: {_correction_id}")
 
     # ── Notificación Telegram SIEMPRE (monitoreo total) ──────────────────────
-    if saved:
-        try:
-            telegram_notify_call(
-                call_id=call_id,
-                phone=phone,
-                original_outcome=original_outcome,
-                aria_outcome=aria_outcome,
-                confidence=aria_confidence,
-                reasoning=audit_result.get("reasoning", ""),
-                errors=audit_result.get("errors_detected", []),
-                playbook_score=audit_result.get("playbook_adherence_score"),
-                contact_name=ghl_fields.get("contact_full_name"),
-                call_ended_at=ended_at,
-                duration_seconds=duration_seconds,
-                has_discrepancy=has_discrepancy,
-                correction_id=_correction_id,
-            )
-            log.info(f"Telegram notification sent — discrepancy={has_discrepancy} correction={_correction_id}")
-        except Exception as _tg_err:
-            log.error(f"Telegram notify error: {_tg_err}")
+    # FIX C2: Telegram se envía independientemente de si Supabase guardó.
+    # Antes: if saved — si supabase_upsert fallaba (key no configurada, timeout, etc.)
+    # el mensaje de Telegram nunca llegaba. Ahora ARIA siempre notifica si auditó.
+    try:
+        telegram_notify_call(
+            call_id=call_id,
+            phone=phone,
+            original_outcome=original_outcome,
+            aria_outcome=aria_outcome,
+            confidence=aria_confidence,
+            reasoning=audit_result.get("reasoning", ""),
+            errors=audit_result.get("errors_detected", []),
+            playbook_score=audit_result.get("playbook_adherence_score"),
+            contact_name=ghl_fields.get("contact_full_name"),
+            call_ended_at=ended_at,
+            duration_seconds=duration_seconds,
+            has_discrepancy=has_discrepancy,
+            correction_id=_correction_id,
+        )
+        log.info(f"Telegram notification sent — discrepancy={has_discrepancy} correction={_correction_id} supabase_saved={bool(saved)}")
+    except Exception as _tg_err:
+        log.error(f"Telegram notify error: {_tg_err}")
 
     return {
         "call_id": call_id,
