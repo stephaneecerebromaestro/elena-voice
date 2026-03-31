@@ -386,17 +386,23 @@ def handle_get_contact(args):
     FIX B: Validates phone number before searching.
     """
     phone = args.get("phone", "")
-    caller_phone = args.get("callerPhone", "")  # FIX A: real caller phone injected by server
-    # Normalize the provided phone
-    phone_normalized, phone_valid = normalize_phone(phone)
-    
-    # FIX A+B+K: If phone is empty OR invalid/fake, use the real caller phone
-    # This prevents Elena from hallucinating a phone number — she should call
-    # get_contact without a phone argument and the server uses the real caller number.
-    if (not phone or not phone_valid) and caller_phone:
-        phone_normalized, phone_valid = normalize_phone(caller_phone)
-        if phone_valid:
-            phone = caller_phone  # Use real caller phone
+    caller_phone = args.get("callerPhone", "")  # Real caller phone injected by server
+
+    # FIX B1 (INBOUND OVERRIDE): If callerPhone is available, it ALWAYS wins.
+    # In an inbound call Elena cannot know the caller's number — any phone she
+    # provides is a hallucination. The server enforces the real callerPhone.
+    if caller_phone:
+        caller_normalized, caller_valid = normalize_phone(caller_phone)
+        if caller_valid:
+            phone = caller_phone
+            phone_normalized = caller_normalized
+            phone_valid = True
+        else:
+            # callerPhone itself is invalid — fall back to Elena's provided phone
+            phone_normalized, phone_valid = normalize_phone(phone)
+    else:
+        # No callerPhone (outbound or missing) — use Elena's provided phone
+        phone_normalized, phone_valid = normalize_phone(phone)
     
     if not phone_normalized:
         return {"found": False, "message": "Número de teléfono no proporcionado."}
@@ -454,14 +460,17 @@ def handle_create_contact(args):
             "message": f"El email '{email}' no parece válido. Por favor pídele al cliente que lo deletree de nuevo."
         }
     
-    # FIX B: Validate phone
-    phone_normalized, phone_valid = normalize_phone(phone)
-    
-    # FIX A: If provided phone is invalid, use real caller phone
-    if not phone_valid and caller_phone:
-        phone_normalized, phone_valid = normalize_phone(caller_phone)
-        if phone_valid:
+    # FIX B1: callerPhone ALWAYS has priority (inbound override)
+    if caller_phone:
+        caller_normalized, caller_valid = normalize_phone(caller_phone)
+        if caller_valid:
             phone = caller_phone
+            phone_normalized = caller_normalized
+            phone_valid = True
+        else:
+            phone_normalized, phone_valid = normalize_phone(phone)
+    else:
+        phone_normalized, phone_valid = normalize_phone(phone)
     
     if not phone_valid:
         return {
