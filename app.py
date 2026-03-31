@@ -124,7 +124,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.51"  # FIX C1+C2: ARIA cobertura 100% | FIX D1: dedup lock in-memory (1 worker) | FIX E1: no_interesado
+SERVER_VERSION = "v17.52"  # FIX F2: ARIA Polling daemon=False + sleep inicial 30s (cubre ventana restart Render)
                            # FIX C2: Telegram independiente de Supabase — ARIA notifica aunque upsert falle
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
