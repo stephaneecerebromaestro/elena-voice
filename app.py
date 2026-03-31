@@ -124,7 +124,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.49"  # FIX C1: ARIA thread daemon=False — sobrevive reciclado de worker Gunicorn (cobertura 100%)
+SERVER_VERSION = "v17.50"  # FIX C1+C2: ARIA cobertura 100% | FIX D1: dedup lock in-memory | FIX E1: no_interesado detection
                            # FIX C2: Telegram independiente de Supabase — ARIA notifica aunque upsert falle
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
@@ -1382,9 +1382,29 @@ def _process_end_of_call(message):
                     stage = "Llamar Luego"
                     print("[outcome] llamar_luego via keyword fallback (schedule_callback not in messages)")
                 else:
-                    outcome = "no_agendo"
-                    outcome_label = "No Agendó"
-                    stage = "Poco Interes"
+                    # FIX E1: Detect explicit rejection — no_interesado
+                    # Must be checked AFTER llamar_luego to avoid false positives
+                    # ("no puedo ahora" is llamar_luego, not no_interesado)
+                    NO_INTERESADO_PHRASES = [
+                        "no me interesa", "no me interesa el botox", "no me interesa el tratamiento",
+                        "no quiero", "no quiero botox", "no quiero el tratamiento", "no quiero nada",
+                        "no gracias", "no, gracias", "no thank you", "no thanks",
+                        "not interested", "no interest",
+                        "no estoy interesada", "no estoy interesado",
+                        "no me llames más", "no me llames", "no me vuelvas a llamar",
+                        "quítame de tu lista", "remove me from", "don't call me", "do not call me",
+                        "no necesito", "no necesito botox", "no necesito nada",
+                        "no me interesa por ahora", "por ahora no me interesa",
+                    ]
+                    if any(ph in transcript_lower for ph in NO_INTERESADO_PHRASES):
+                        outcome = "no_interesado"
+                        outcome_label = "No Interesado"
+                        stage = "No Interesado"
+                        print("[outcome] no_interesado via keyword detection")
+                    else:
+                        outcome = "no_agendo"
+                        outcome_label = "No Agendó"
+                        stage = "Poco Interes"
 
         # ── Step 3: Find the GHL contact by phone ─────────────────────────────
         contact_id = ""

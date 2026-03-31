@@ -68,6 +68,13 @@ ARIA_VERSION = "2.0.0"
 # FIX #1: Modelo correcto verificado en la cuenta
 AUDIT_MODEL = "claude-sonnet-4-5"
 
+# FIX D1: In-memory lock para prevenir condición de carrera entre realtime webhook + polling
+# Cuando 3 procesos leen already_audited al mismo tiempo (antes de que ninguno guarde en Supabase),
+# los 3 pasan el check y auditan la misma llamada 3 veces. Este set bloquea el segundo y tercer intento.
+import threading as _threading_aria
+_calls_in_progress: set = set()  # call_ids actualmente siendo auditados
+_calls_in_progress_lock = _threading_aria.Lock()
+
 # Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -1234,6 +1241,24 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
     if call_data.get("status") != "ended":
         return None
 
+    # FIX D1: In-memory lock — previene condición de carrera entre realtime + polling.
+    # Sin esto: realtime y polling leen already_audited al mismo tiempo (antes de que
+    # ninguno guarde en Supabase), ambos pasan el check y auditan la misma llamada 2-3x.
+    with _calls_in_progress_lock:
+        if call_id in _calls_in_progress:
+            log.info(f"Skipping call {call_id} — already being audited in another thread (in-progress lock)")
+            return None
+        _calls_in_progress.add(call_id)
+
+    try:
+        return _process_call_inner(call_data, already_audited, call_id)
+    finally:
+        with _calls_in_progress_lock:
+            _calls_in_progress.discard(call_id)
+
+
+def _process_call_inner(call_data: dict, already_audited: set, call_id: str) -> Optional[dict]:
+    """Lógica interna de process_call, separada para permitir el lock en el wrapper."""
     log.info(f"Processing call: {call_id}")
 
     # Obtener datos del contacto en GHL
