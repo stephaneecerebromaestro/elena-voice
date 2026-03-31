@@ -124,7 +124,7 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.53"  # FIX G1: ARIA lee GHL post-Claude (elimina race condition discrepancia)
+SERVER_VERSION = "v17.54"  # FIX G1: ARIA lee GHL post-Claude (elimina race condition discrepancia)
                            # FIX C2: Telegram independiente de Supabase — ARIA notifica aunque upsert falle
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
