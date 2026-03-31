@@ -124,9 +124,8 @@ VERIFICANDO_PHRASES = [
     "one moment please", "just a moment"
 ]
 
-SERVER_VERSION = "v17.48"  # FIX I: ABSOLUTE PRIORITY RULE at top of prompt — 'quiero agendar' ALWAYS = check_availability, NEVER endCall
-                           # FIX B: reschedule_appointment success = outcome agendo (was no_agendo)
-                           # FIX C/D/E: prompt — skip pitch if client already wants to book, no re-call check_availability, endCall post-despedida
+SERVER_VERSION = "v17.49"  # FIX C1: ARIA thread daemon=False — sobrevive reciclado de worker Gunicorn (cobertura 100%)
+                           # FIX C2: Telegram independiente de Supabase — ARIA notifica aunque upsert falle
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
 # Prevents duplicate GHL contacts when LLM calls create_contact twice in parallel
@@ -1690,9 +1689,9 @@ def vapi_server_url():
                             _aria_log.warning('ARIA realtime: audit retornó None (llamada ya auditada o sin datos)')
                     except Exception as _e:
                         _aria_log.error(f'ARIA realtime audit error: {type(_e).__name__}: {_e}', exc_info=True)
-                aria_t = threading.Thread(target=_aria_realtime_audit, args=(call_data,), daemon=True)
+                aria_t = threading.Thread(target=_aria_realtime_audit, args=(call_data,), daemon=False)  # FIX C1: non-daemon — ARIA thread sobrevive reciclado de worker Gunicorn
                 aria_t.start()
-                logging.getLogger('aria').info('ARIA realtime: thread iniciado')
+                logging.getLogger('aria').info('ARIA realtime: thread iniciado (non-daemon)')
             except Exception as _hook_e:
                 logging.getLogger('aria').error(f'ARIA realtime hook error: {_hook_e}')  # Log pero no bloquea Elena
 
