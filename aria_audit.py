@@ -2087,11 +2087,16 @@ def _aria_polling_loop(interval_seconds: int = 180):
     Loop de polling activo: cada `interval_seconds` consulta Vapi por llamadas
     terminadas en la ultima hora y audita las que no estan en Supabase.
     Cubre inbound Twilio donde Vapi no envia el webhook end-of-call-report.
+    FIX F2: Sleep inicial reducido a 30s para cubrir llamadas durante restart de Render.
+    Ciclos subsiguientes cada interval_seconds (default 180s).
     """
-    log.info(f"ARIA Polling iniciado — intervalo: {interval_seconds}s")
+    log.info(f"ARIA Polling iniciado — intervalo: {interval_seconds}s, primer ciclo en 30s")
+    first_run = True
     while True:
         try:
-            _time.sleep(interval_seconds)
+            # FIX F2: 30s en primer ciclo (cubre ventana de restart), luego intervalo normal
+            _time.sleep(30 if first_run else interval_seconds)
+            first_run = False
             log.info("ARIA Polling: buscando llamadas no auditadas...")
             calls = fetch_vapi_calls(hours_back=1, limit=30)
             ended_calls = [c for c in calls if c.get("status") == "ended"]
@@ -2126,8 +2131,10 @@ def _aria_polling_loop(interval_seconds: int = 180):
 
 def start_aria_polling(interval_seconds: int = 180):
     """
-    Iniciar el loop de polling en un daemon thread.
+    Iniciar el loop de polling en un non-daemon thread.
     Idempotente: solo inicia una vez aunque se llame varias veces.
+    FIX F2: daemon=False (igual que el thread de ARIA realtime C1) para que el polling
+    sobreviva el reciclado de workers de Gunicorn y no se pierdan llamadas.
     """
     global _polling_started
     with _polling_lock:
@@ -2138,11 +2145,11 @@ def start_aria_polling(interval_seconds: int = 180):
     t = _threading.Thread(
         target=_aria_polling_loop,
         args=(interval_seconds,),
-        daemon=True,
+        daemon=False,  # FIX F2: non-daemon — sobrevive reciclo de worker Gunicorn
         name="aria-polling"
     )
     t.start()
-    log.info(f"ARIA Polling thread iniciado (daemon) — intervalo {interval_seconds}s")
+    log.info(f"ARIA Polling thread iniciado (non-daemon) — intervalo {interval_seconds}s, primer ciclo en 30s")
 
 
 # ============================================================
