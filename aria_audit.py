@@ -1286,17 +1286,22 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str) -> 
         if ghl_contact_id:
             log.info(f"Contact found by phone fallback [{call_id}]: {ghl_contact_id}")
 
-    # Obtener campos de Elena
-    ghl_fields = {}
-    if ghl_contact_id:
-        ghl_fields = get_ghl_contact_fields(ghl_contact_id)
-        original_outcome = ghl_fields.get("elena_last_outcome")
-
-    # Auditar con Claude
+    # FIX G1: Auditar con Claude PRIMERO (tarda ~30s), luego leer GHL.
+    # Antes: get_ghl_contact_fields() se llamaba ANTES de Claude → race condition:
+    # el thread de GHL (app.py) aún no había escrito el outcome en GHL cuando ARIA lo leía.
+    # Resultado: original_outcome = None (primera llamada) → has_discrepancy = False siempre.
+    # Ahora: Claude tarda ~30s → cuando ARIA lee GHL, el thread de GHL ya terminó.
     audit_result = audit_call_with_claude(call_data)
 
     aria_outcome = audit_result.get("correct_outcome")
     aria_confidence = audit_result.get("confidence", 0.0)
+
+    # Obtener campos de Elena DESPUÉS de Claude (GHL ya tiene el outcome final)
+    ghl_fields = {}
+    if ghl_contact_id:
+        ghl_fields = get_ghl_contact_fields(ghl_contact_id)
+        original_outcome = ghl_fields.get("elena_last_outcome")
+        log.info(f"GHL outcome leído post-Claude [{call_id}]: {original_outcome}")
 
     # Determinar si hay discrepancia
     has_discrepancy = (
