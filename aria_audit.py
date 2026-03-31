@@ -1420,15 +1420,27 @@ def process_single_call_realtime(call_data: dict) -> Optional[dict]:
     Procesar una llamada individual en tiempo real (disparado por webhook de Vapi).
     El webhook end-of-call-report garantiza que la llamada ya terminó, pero Vapi
     puede enviar status='queued', 'ringing', o None en el payload.
-    FIX H1: Forzamos status='ended' siempre que no sea ya 'ended', porque el
-    webhook end-of-call-report es prueba suficiente de que la llamada terminó.
-    Bug anterior: solo inyectaba si status era None/vacío, no si era 'queued'.
+    FIX H1: Forzamos status='ended' siempre que no sea ya 'ended'.
+    FIX H2: Filtramos llamadas completamente vacías (sin transcript ni duración)
+    que Vapi crea cuando la llamada no llega a conectar — estas no deben procesarse.
     """
     call_id = call_data.get("id")
     status_in_payload = call_data.get("status")
+
+    # FIX H2: Filtrar llamadas que Vapi creó pero nunca conectaron.
+    # Indicadores: sin transcript, sin duración, sin ended_reason.
+    # Antes del FIX H1 estas llegaban con status='queued' y process_call las rechazaba.
+    # Ahora que forzamos 'ended', necesitamos filtrarlas explícitamente.
+    transcript = call_data.get("transcript") or ""
+    duration = call_data.get("duration") or call_data.get("durationSeconds") or 0
+    ended_reason = call_data.get("endedReason") or call_data.get("ended_reason") or ""
+    has_real_data = bool(transcript.strip()) or (duration and int(duration) > 0)
+    if not has_real_data:
+        log.info(f"process_single_call_realtime [{call_id}]: llamada sin datos (transcript vacío, duration=0, ended_reason='{ended_reason}') — saltando (FIX H2)")
+        return None
+
     if status_in_payload != "ended":
-        # FIX H1: El webhook end-of-call-report garantiza que la llamada terminó.
-        # Vapi puede enviar status='queued', 'ringing', None, etc. — los forzamos a 'ended'.
+        # FIX H1: Vapi puede enviar status='queued', 'ringing', None, etc.
         call_data = dict(call_data)  # copia para no mutar el original
         call_data["status"] = "ended"
         log.info(f"process_single_call_realtime [{call_id}]: status='{status_in_payload}' → forzado a 'ended' (FIX H1)")
