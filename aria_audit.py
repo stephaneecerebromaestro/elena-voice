@@ -2175,8 +2175,8 @@ def _send_tendencia_inner(chat_id: str):
     _r = requests.get(
         f"{_surl}/rest/v1/call_audits",
         headers=_hdrs,
-        params={"call_started_at": f"gte.{cutoff_30d}", "limit": "2000",
-                "select": "call_started_at,aria_outcome,errors_detected,call_duration_seconds"},
+        params={"created_at": f"gte.{cutoff_30d}", "limit": "2000",
+                "select": "created_at,aria_outcome,errors_detected,call_duration_seconds,playbook_adherence_score,phone_number,ghl_contact_id"},
         timeout=15
     )
     if _r.status_code != 200:
@@ -2190,7 +2190,7 @@ def _send_tendencia_inner(chat_id: str):
     from collections import defaultdict
     day_buckets = defaultdict(list)
     for r in all_records:
-        ts = r.get("call_started_at") or r.get("created_at") or ""
+        ts = r.get("created_at") or ""
         if not ts:
             continue
         try:
