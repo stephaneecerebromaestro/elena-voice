@@ -465,11 +465,18 @@ def telegram_handle_command(command: str, args: str, chat_id: str) -> bool:
 
 
 def _send_daily_report_command(chat_id: str):
-    """Enviar reporte del día actual on-demand."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    """Enviar reporte del día actual on-demand. FIX I1: usar EDT para la fecha."""
+    import pytz
+    edt = pytz.timezone("America/New_York")
+    now_edt = datetime.now(edt)
+    today = now_edt.strftime("%Y-%m-%d")
+    edt_start = now_edt.replace(hour=0, minute=0, second=0, microsecond=0)
+    edt_end = edt_start + timedelta(days=1)
+    utc_start = edt_start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    utc_end = edt_end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     records = supabase_query(
         "call_audits",
-        f"created_at=gte.{today}T00:00:00Z&order=created_at.desc&limit=200"
+        f"created_at=gte.{utc_start}&created_at=lt.{utc_end}&order=created_at.desc&limit=200"
     )
     if not records:
         telegram_send(f"📊 Sin llamadas auditadas hoy ({today}).", chat_id=chat_id)
@@ -2017,14 +2024,22 @@ def run_daily_report():
     """
     Generar y enviar el reporte diario a las 8PM EDT.
     Incluye métricas del día + eficacia de ARIA + correcciones.
+    FIX I1: Usar EDT para la fecha del reporte — a las 8PM EDT ya es día siguiente en UTC.
     """
-    audit_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    import pytz
+    edt = pytz.timezone("America/New_York")
+    audit_date = datetime.now(edt).strftime("%Y-%m-%d")
     log.info(f"Generating daily report for {audit_date}")
 
-    # Obtener todos los audits del día
+    # Obtener todos los audits del día (FIX I1: rango EDT → UTC)
+    # 8PM EDT = 00:00 UTC siguiente día, así que filtramos por call_started_at o created_at en rango EDT
+    edt_start = datetime.now(edt).replace(hour=0, minute=0, second=0, microsecond=0)
+    edt_end = edt_start + timedelta(days=1)
+    utc_start = edt_start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    utc_end = edt_end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     records = supabase_query(
         "call_audits",
-        f"created_at=gte.{audit_date}T00:00:00Z&order=created_at.desc&limit=500"
+        f"created_at=gte.{utc_start}&created_at=lt.{utc_end}&order=created_at.desc&limit=500"
     )
 
     results = _records_to_results(records) if records else []
