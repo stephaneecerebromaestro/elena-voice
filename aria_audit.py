@@ -1,7 +1,13 @@
 """
-ARIA — Auditoría y Revisión Inteligente Automatizada v3.0.0
+ARIA — Auditoría y Revisión Inteligente Automatizada v3.1.1
 Sistema de auditoría automática de llamadas para Elena AI Voice Agent
 Fecha: 1 abril 2026
+
+CAMBIOS v3.1.1:
+  FIX /tendencia: requests directo con key explícita (bypass importlib.reload en threads)
+  NUEVO: /backfill — pobla call_intelligence con llamadas históricas (152 llamadas ~$0.30-0.50)
+  MEJORA /intel: fallback accionable con conteos reales cuando call_intelligence está vacío
+  MEJORA /leads: usa call_intelligence cuando existe, fallback a call_audits con nota de backfill
 
 CAMBIOS v3.0:
   BUG FIX #1: /errores usaba isoformat() → Supabase rechazaba → siempre "Sin errores"
@@ -53,7 +59,7 @@ RENDER_SERVER_URL = os.getenv("RENDER_SERVER_URL", "https://elena-pdem.onrender.
 AUDIT_LOOKBACK_HOURS = int(os.getenv("AUDIT_LOOKBACK_HOURS", "25"))
 AUDIT_BATCH_SIZE = int(os.getenv("AUDIT_BATCH_SIZE", "50"))
 CONFIDENCE_THRESHOLD_CORRECTION = float(os.getenv("CONFIDENCE_THRESHOLD_CORRECTION", "0.85"))
-ARIA_VERSION = "3.0.0"
+ARIA_VERSION = "3.1.1"
 AUDIT_MODEL = "claude-sonnet-4-5"
 
 _calls_in_progress: set = set()
@@ -1274,6 +1280,12 @@ def handle_telegram_command(command: str, args: str = "", chat_id: str = None) -
                 telegram_send("⚠️ Uso: /contacto [teléfono]", chat_id=chat_id)
         elif command == "/tendencia":
             _send_tendencia(chat_id)
+        elif command == "/backfill":
+            # Backfill call_intelligence para llamadas históricas
+            arg_clean = (args or "").strip()
+            days = int(arg_clean) if arg_clean.isdigit() else 90
+            _t = _threading.Thread(target=_run_backfill_intelligence, args=(chat_id, days, 200), daemon=True)
+            _t.start()
         elif command == "/ayuda":
             _send_ayuda(chat_id)
         else:
@@ -1702,6 +1714,168 @@ def _send_call_detail(chat_id: str, call_id: str):
 
 
 # ============================================================
+# BACKFILL CALL_INTELLIGENCE
+# ============================================================
+
+def _extract_intelligence_from_transcript(call_id: str, transcript: str, aria_outcome: str, phone: str) -> Optional[dict]:
+    """Extrae client_intelligence de un transcript ya guardado en call_audits (backfill)."""
+    if not transcript or len(transcript) < 200:
+        return None
+    prompt = (
+        "Analiza este transcript de una llamada de Elena (agente de ventas de Botox/estética médica).\n"
+        "Extrae la inteligencia de cliente en formato JSON.\n\n"
+        "TRANSCRIPT:\n" + transcript[:3000] + "\n\n"
+        "OUTCOME CONOCIDO: " + (aria_outcome or "desconocido") + "\n\n"
+        "Responde SOLO con JSON válido, sin texto adicional:\n"
+        "{\n"
+        '  "call_type": "real_conversation",\n'
+        '  "language": "es|en|mixed",\n'
+        '  "interest_level": 1-5,\n'
+        '  "zones_mentioned": ["frente", "patas_de_gallo", "papada", etc],\n'
+        '  "objections": ["texto literal de la objección"],\n'
+        '  "questions_asked": ["pregunta literal del cliente"],\n'
+        '  "barriers": ["barrera logística o personal"],\n'
+        '  "outcome_reason": "por qué no agendó si no agendó",\n'
+        '  "best_callback_signal": "señal de cuándo llamar de vuelta o null",\n'
+        '  "engagement_quality": "low|medium|high",\n'
+        '  "trust_signals": ["señal de confianza"],\n'
+        '  "buying_stage": "awareness|consideration|intent|ready_to_book",\n'
+        '  "price_sensitivity": "high|medium|low|unknown",\n'
+        '  "treatment_knowledge": "novice|informed|experienced"\n'
+        "}"
+    )
+    try:
+        response = anthropic_client.messages.create(
+            model=AUDIT_MODEL,
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = response.content[0].text.strip()
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+        intel = json.loads(text)
+        intel["call_type"] = "real_conversation"  # garantizar
+        return intel
+    except Exception as e:
+        log.warning("Backfill intel error [" + call_id + "]: " + str(e))
+        return None
+
+
+def _run_backfill_intelligence(chat_id: str, days: int = 90, max_calls: int = 200):
+    """Backfill call_intelligence para llamadas históricas con transcript real pero sin inteligencia."""
+    telegram_send(
+        "🔄 <b>Iniciando backfill de inteligencia...</b>\n"
+        "Buscando llamadas con transcript real sin inteligencia registrada.\n"
+        "Esto puede tomar 5-15 minutos.",
+        chat_id=chat_id
+    )
+    cutoff = _utc_cutoff(days=days)
+    # Obtener call_audits con transcript real
+    audit_records = supabase_query(
+        "call_audits",
+        "call_started_at=gte." + cutoff
+        + "&aria_outcome=in.(no_agendo,agendo,llamar_luego,no_interesado)"
+        + "&limit=" + str(max_calls)
+        + "&order=call_started_at.desc"
+        + "&select=vapi_call_id,transcript_text,aria_outcome,phone_number,ghl_contact_id"
+    )
+    if not audit_records:
+        telegram_send("📊 Sin llamadas con conversación real en los últimos " + str(days) + " días.", chat_id=chat_id)
+        return
+
+    # Filtrar solo las que tienen transcript real (>200 chars)
+    real_calls = [r for r in audit_records if r.get("transcript_text") and len(r.get("transcript_text") or "") > 200]
+    if not real_calls:
+        telegram_send("📊 Sin transcripts reales encontrados.", chat_id=chat_id)
+        return
+
+    # Obtener los que ya tienen inteligencia en call_intelligence
+    existing_intel_ids = set()
+    existing_records = supabase_query(
+        "call_intelligence",
+        "created_at=gte." + cutoff + "&select=vapi_call_id&limit=1000"
+    )
+    for r in existing_records:
+        if r.get("vapi_call_id"):
+            existing_intel_ids.add(r["vapi_call_id"])
+
+    # Filtrar solo los que NO tienen inteligencia
+    pending = [r for r in real_calls if r.get("vapi_call_id") not in existing_intel_ids]
+
+    if not pending:
+        telegram_send(
+            "✅ Todas las llamadas con conversación real ya tienen inteligencia registrada.\n"
+            "Total con intel: " + str(len(existing_intel_ids)),
+            chat_id=chat_id
+        )
+        return
+
+    telegram_send(
+        "📊 <b>Backfill:</b> " + str(len(pending)) + " llamadas pendientes de " + str(len(real_calls)) + " con transcript real.\n"
+        "Ya tienen inteligencia: " + str(len(existing_intel_ids)) + "\n"
+        "Procesando con Claude...",
+        chat_id=chat_id
+    )
+
+    processed = 0
+    errors = 0
+    for r in pending:
+        call_id = r.get("vapi_call_id", "")
+        transcript = r.get("transcript_text", "")
+        aria_outcome = r.get("aria_outcome", "")
+        phone = r.get("phone_number", "")
+        ghl_contact_id = r.get("ghl_contact_id")
+
+        intel = _extract_intelligence_from_transcript(call_id, transcript, aria_outcome, phone)
+        if intel:
+            intel_record = {
+                "vapi_call_id": call_id,
+                "call_type": intel.get("call_type", "real_conversation"),
+                "language": intel.get("language"),
+                "interest_level": intel.get("interest_level"),
+                "zones_mentioned": intel.get("zones_mentioned"),
+                "objections": intel.get("objections"),
+                "questions_asked": intel.get("questions_asked"),
+                "barriers": intel.get("barriers"),
+                "outcome_reason": intel.get("outcome_reason"),
+                "best_callback_signal": intel.get("best_callback_signal"),
+                "engagement_quality": intel.get("engagement_quality"),
+                "trust_signals": intel.get("trust_signals"),
+                "buying_stage": intel.get("buying_stage"),
+                "price_sensitivity": intel.get("price_sensitivity"),
+                "treatment_knowledge": intel.get("treatment_knowledge"),
+                "phone_number": phone,
+                "ghl_contact_id": ghl_contact_id,
+            }
+            saved = supabase_upsert("call_intelligence", intel_record, on_conflict="vapi_call_id")
+            if saved:
+                processed += 1
+            else:
+                errors += 1
+        else:
+            errors += 1
+
+        # Progreso cada 20 llamadas
+        if (processed + errors) % 20 == 0 and (processed + errors) > 0:
+            telegram_send(
+                "🔄 Backfill en progreso: " + str(processed) + " guardadas, " + str(errors) + " errores...",
+                chat_id=chat_id
+            )
+
+    telegram_send(
+        "✅ <b>Backfill completado</b>\n"
+        "────────────────────────\n"
+        "📊 Procesadas: <b>" + str(processed) + "</b>\n"
+        "⚠️ Errores: <b>" + str(errors) + "</b>\n"
+        "Total con inteligencia ahora: <b>" + str(len(existing_intel_ids) + processed) + "</b>\n\n"
+        "Usa /intel para ver el análisis actualizado.",
+        chat_id=chat_id
+    )
+
+
+# ============================================================
 # COMANDOS DE INTELIGENCIA
 # ============================================================
 
@@ -1709,16 +1883,24 @@ def _send_intel_report(chat_id: str, days: int = 7):
     cutoff = _utc_cutoff(days=days)
     records = supabase_query("call_intelligence", "created_at=gte." + cutoff + "&limit=500")
     if not records:
-        # Fallback: buscar en call_audits con client_intelligence en el campo raw
+        # Fallback mejorado: buscar en call_audits y mostrar resumen accionable
         audit_records = supabase_query(
             "call_audits",
             "call_started_at=gte." + cutoff + "&limit=1000"
         )
-        real_convos_count = sum(1 for r in audit_records if r.get("transcript_text") and len(r.get("transcript_text") or "") > 200)
+        real_convos = [r for r in audit_records if r.get("transcript_text") and len(r.get("transcript_text") or "") > 200]
+        real_convos_count = len(real_convos)
+        total_audits = len(audit_records)
+        no_agendo_count = sum(1 for r in real_convos if r.get("aria_outcome") == "no_agendo")
+        agendo_count = sum(1 for r in real_convos if r.get("aria_outcome") == "agendo")
         telegram_send(
-            "📊 Sin inteligencia de cliente en los últimos " + str(days) + " días.\n"
-            "La tabla call_intelligence se llena con llamadas nuevas procesadas a partir de ahora.\n"
-            "Llamadas con conversación real en el período: <b>" + str(real_convos_count) + "</b>",
+            "🧠 <b>Inteligencia de Cliente — Últimos " + str(days) + "d</b>\n"
+            "────────────────────────\n"
+            "📊 Audits en período: <b>" + str(total_audits) + "</b>\n"
+            "💬 Conversaciones reales: <b>" + str(real_convos_count) + "</b>\n"
+            "✅ Agendaron: <b>" + str(agendo_count) + "</b> | 📋 No agendaron: <b>" + str(no_agendo_count) + "</b>\n\n"
+            "⚠️ La tabla de inteligencia estructurada (zonas, objeciones, interés) aún no tiene datos.\n"
+            "Ejecuta <b>/backfill</b> para poblarla con las llamadas históricas (~$0.30-0.50 en Claude).",
             chat_id=chat_id
         )
         return
@@ -1789,84 +1971,86 @@ def _send_intel_report(chat_id: str, days: int = 7):
 
 def _send_hot_leads(chat_id: str):
     cutoff = _utc_cutoff(days=7)
-    records = supabase_query(
+    # Primero intentar con call_intelligence (datos estructurados)
+    intel_records = supabase_query(
         "call_intelligence",
         "created_at=gte." + cutoff + "&buying_stage=in.(intent,ready_to_book)&limit=100"
     )
-    if not records:
-        # call_intelligence se llena con llamadas nuevas desde ahora
-        # Mientras tanto, buscar leads con no_agendo en call_audits que tuvieron conversación real
-        audit_cutoff = _utc_cutoff(days=7)
-        hot_from_audits = supabase_query(
-            "call_audits",
-            "call_started_at=gte." + audit_cutoff + "&aria_outcome=eq.no_agendo&limit=100"
-        )
-        real_hot = [r for r in hot_from_audits if r.get("transcript_text") and len(r.get("transcript_text") or "") > 300]
-        if not real_hot:
-            telegram_send(
-                "📊 Sin leads calientes en los últimos 7 días.\n"
-                "La inteligencia de cliente (zonas, objeciones, interés) se acumulará con llamadas nuevas.",
-                chat_id=chat_id
-            )
-            return
+    # También buscar en call_intelligence sin filtro de stage para ver todos los no-agendaron
+    all_intel = supabase_query(
+        "call_intelligence",
+        "created_at=gte." + cutoff + "&limit=200"
+    )
+    # Obtener outcomes de call_audits para filtrar los que no agendaron
+    intel_not_booked = []
+    for r in all_intel:
+        call_id = r.get("vapi_call_id")
+        if not call_id:
+            continue
+        audit_rec = supabase_query("call_audits", "vapi_call_id=eq." + call_id + "&select=aria_outcome,phone_number&limit=1")
+        if audit_rec and audit_rec[0].get("aria_outcome") != "agendo":
+            intel_not_booked.append({
+                "phone": r.get("phone_number") or audit_rec[0].get("phone_number", "N/A"),
+                "interest": r.get("interest_level", "?"),
+                "stage": r.get("buying_stage", "?"),
+                "zones": r.get("zones_mentioned") or [],
+                "barriers": r.get("barriers") or [],
+                "objections": r.get("objections") or [],
+                "callback": r.get("best_callback_signal"),
+                "outcome": audit_rec[0].get("aria_outcome"),
+                "engagement": r.get("engagement_quality", "?"),
+            })
+    if intel_not_booked:
+        # Ordenar por interés descendente
+        intel_not_booked.sort(key=lambda x: x["interest"] if isinstance(x["interest"], int) else 0, reverse=True)
         text = (
-            "🔥 <b>Leads No Agendaron (con conversación real)</b>\n"
+            "🔥 <b>Leads Calientes — No agendaron</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "Total: <b>" + str(len(real_hot)) + "</b> leads con conversación real\n"
-            "<i>Nota: análisis de interés/zonas disponible para llamadas nuevas</i>\n\n"
+            "Total: <b>" + str(len(intel_not_booked)) + "</b> leads con inteligencia\n\n"
         )
-        for i, r in enumerate(real_hot[:10], 1):
-            phone = r.get("phone_number", "N/A")
-            dur = r.get("call_duration_seconds")
-            dur_str = str(int(dur) // 60) + "m" + str(int(dur) % 60) + "s" if dur else "N/A"
-            started = (r.get("call_started_at") or "")[:10]
-            reasoning = (r.get("aria_reasoning") or "")[:80]
-            text += str(i) + ". <b>" + phone + "</b> | " + started + " | " + dur_str + "\n   " + reasoning + "\n\n"
+        for i, lead in enumerate(intel_not_booked[:10], 1):
+            phone = lead["phone"] or "N/A"
+            zones_str = ", ".join(lead["zones"][:3]) if lead["zones"] else "N/A"
+            barrier_str = lead["barriers"][0] if lead["barriers"] else ""
+            callback_str = "\n   📅 Llamar: " + lead["callback"] if lead["callback"] else ""
+            objection_str = "\n   💬 Objección: " + lead["objections"][0][:60] if lead["objections"] else ""
+            stage_emoji = "🔥" if lead["stage"] in ("intent", "ready_to_book") else "📊"
+            text += (
+                str(i) + ". <b>" + phone + "</b> | ⭐" + str(lead["interest"]) + "/5 | " + stage_emoji + lead["stage"] + "\n"
+                "   Zonas: " + zones_str + " | Engagement: " + str(lead["engagement"])
+                + ("  | Barrera: " + barrier_str[:50] if barrier_str else "")
+                + callback_str + objection_str + "\n\n"
+            )
         telegram_send(text[:4096], chat_id=chat_id)
         return
 
-    hot_leads = []
-    for r in records:
-        call_id = r.get("vapi_call_id")
-        audit_records = supabase_query("call_audits", "vapi_call_id=eq." + call_id + "&select=aria_outcome,phone_number")
-        if audit_records:
-            outcome = audit_records[0].get("aria_outcome")
-            if outcome != "agendo":
-                hot_leads.append({
-                    "phone": r.get("phone_number") or (audit_records[0].get("phone_number") if audit_records else "N/A"),
-                    "interest": r.get("interest_level", "?"),
-                    "stage": r.get("buying_stage", "?"),
-                    "zones": r.get("zones_mentioned") or [],
-                    "barriers": r.get("barriers") or [],
-                    "objections": r.get("objections") or [],
-                    "callback": r.get("best_callback_signal"),
-                    "outcome": outcome,
-                })
-
-    if not hot_leads:
-        telegram_send("✅ Sin leads calientes pendientes — todos los leads con intención ya agendaron.", chat_id=chat_id)
-        return
-
-    text = (
-        "🔥 <b>Leads Calientes — No agendaron pero tienen intención</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Total: <b>" + str(len(hot_leads)) + "</b> leads\n\n"
+    # Fallback: call_intelligence vacío — usar call_audits directamente
+    audit_cutoff = _utc_cutoff(days=7)
+    hot_from_audits = supabase_query(
+        "call_audits",
+        "call_started_at=gte." + audit_cutoff + "&aria_outcome=eq.no_agendo&limit=100"
     )
-
-    for i, lead in enumerate(hot_leads[:10], 1):
-        phone = lead["phone"] or "N/A"
-        zones_str = ", ".join(lead["zones"][:3]) if lead["zones"] else "N/A"
-        barrier_str = lead["barriers"][0] if lead["barriers"] else ""
-        callback_str = "\n   📅 Llamar: " + lead["callback"] if lead["callback"] else ""
-        objection_str = "\n   💬 Objeción: " + lead["objections"][0][:60] if lead["objections"] else ""
-        text += (
-            str(i) + ". <b>" + phone + "</b> | ⭐" + str(lead["interest"]) + "/5 | " + lead["stage"] + "\n"
-            "   Zonas: " + zones_str + "\n"
-            "   Resultado: " + str(lead["outcome"])
-            + ("  | Barrera: " + barrier_str[:50] if barrier_str else "")
-            + callback_str + objection_str + "\n\n"
+    real_hot = [r for r in hot_from_audits if r.get("transcript_text") and len(r.get("transcript_text") or "") > 300]
+    if not real_hot:
+        telegram_send(
+            "📊 Sin leads calientes en los últimos 7 días.\n"
+            "Ejecuta <b>/backfill</b> para poblar la inteligencia histórica.",
+            chat_id=chat_id
         )
-
+        return
+    text = (
+        "🔥 <b>Leads No Agendaron (sin inteligencia estructurada)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Total: <b>" + str(len(real_hot)) + "</b> leads con conversación real\n"
+        "<i>Ejecuta /backfill para ver zonas, objeciones e interés</i>\n\n"
+    )
+    for i, r in enumerate(real_hot[:10], 1):
+        phone = r.get("phone_number", "N/A")
+        dur = r.get("call_duration_seconds")
+        dur_str = str(int(dur) // 60) + "m" + str(int(dur) % 60) + "s" if dur else "N/A"
+        started = (r.get("call_started_at") or "")[:10]
+        reasoning = (r.get("aria_reasoning") or "")[:80]
+        text += str(i) + ". <b>" + phone + "</b> | " + started + " | " + dur_str + "\n   " + reasoning + "\n\n"
     telegram_send(text[:4096], chat_id=chat_id)
 
 
@@ -1969,16 +2153,29 @@ def _send_contact_history(chat_id: str, phone: str):
 
 
 def _send_tendencia(chat_id: str):
-    # FIX E: una sola query de 30 días, agrupar en Python (antes: 30 queries = timeout)
+    # FIX E v2: requests directo con key explícita para sobrevivir importlib.reload en threads
     import pytz
     edt = pytz.timezone("America/New_York")
     now_edt = datetime.now(edt)
-    # Una sola query para los últimos 30 días
-    cutoff_30d = (now_edt - timedelta(days=30)).astimezone(__import__('pytz').utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    all_records = supabase_query(
-        "call_audits",
-        "call_started_at=gte." + cutoff_30d + "&limit=2000"
+    cutoff_30d = (now_edt - timedelta(days=30)).astimezone(pytz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Key explícita: no depender de _get_supa_headers() que puede fallar en reload
+    _skey = os.environ.get("SUPABASE_SERVICE_KEY") or SUPABASE_SERVICE_KEY
+    _surl = os.environ.get("SUPABASE_URL") or SUPABASE_URL
+    if not _skey:
+        telegram_send("⚠️ /tendencia: clave Supabase no disponible. Verifica SUPABASE_SERVICE_KEY en Render.", chat_id=chat_id)
+        return
+    _hdrs = {"apikey": _skey, "Authorization": f"Bearer {_skey}", "Content-Type": "application/json"}
+    _r = requests.get(
+        f"{_surl}/rest/v1/call_audits",
+        headers=_hdrs,
+        params={"call_started_at": f"gte.{cutoff_30d}", "limit": "2000",
+                "select": "call_started_at,aria_outcome,errors_detected,call_duration_seconds"},
+        timeout=15
     )
+    if _r.status_code != 200:
+        telegram_send(f"⚠️ /tendencia: Error Supabase {_r.status_code} — {_r.text[:80]}", chat_id=chat_id)
+        return
+    all_records = _r.json()
     if not all_records:
         telegram_send("📊 Sin datos en los últimos 30 días.", chat_id=chat_id)
         return
@@ -2054,7 +2251,8 @@ def _send_ayuda(chat_id: str):
         "  /llamada [id] — detalle de una llamada\n\n"
         "🧠 <b>INTELIGENCIA</b>\n"
         "  /intel [días] — zonas, objeciones, preguntas\n"
-        "  /leads calientes — leads con intención sin agendar\n\n"
+        "  /leads calientes — leads con intención sin agendar\n"
+        "  /backfill [días] — poblar inteligencia histórica (~$0.30-0.50)\n\n"
         "🔧 <b>SISTEMA</b>\n"
         "  /status — estado en tiempo real\n"
         "  /contacto [teléfono] — historial de contacto\n"
