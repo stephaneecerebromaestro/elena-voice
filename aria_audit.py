@@ -2153,16 +2153,23 @@ def _send_contact_history(chat_id: str, phone: str):
 
 
 def _send_tendencia(chat_id: str):
-    # FIX E v2: requests directo con key explícita para sobrevivir importlib.reload en threads
+    try:
+        _send_tendencia_inner(chat_id)
+    except Exception as _te:
+        log.error("_send_tendencia crash: " + str(_te), exc_info=True)
+        telegram_send("⚠️ /tendencia error: " + str(_te)[:150], chat_id=chat_id)
+
+
+def _send_tendencia_inner(chat_id: str):
+    telegram_send("🔄 Calculando tendencia...", chat_id=chat_id)
     import pytz
     edt = pytz.timezone("America/New_York")
     now_edt = datetime.now(edt)
     cutoff_30d = (now_edt - timedelta(days=30)).astimezone(pytz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    # Key explícita: no depender de _get_supa_headers() que puede fallar en reload
     _skey = os.environ.get("SUPABASE_SERVICE_KEY") or SUPABASE_SERVICE_KEY
     _surl = os.environ.get("SUPABASE_URL") or SUPABASE_URL
     if not _skey:
-        telegram_send("⚠️ /tendencia: clave Supabase no disponible. Verifica SUPABASE_SERVICE_KEY en Render.", chat_id=chat_id)
+        telegram_send("⚠️ /tendencia: SUPABASE_SERVICE_KEY no disponible en env.", chat_id=chat_id)
         return
     _hdrs = {"apikey": _skey, "Authorization": f"Bearer {_skey}", "Content-Type": "application/json"}
     _r = requests.get(
