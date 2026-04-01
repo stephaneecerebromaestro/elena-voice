@@ -1434,16 +1434,13 @@ def process_single_call_realtime(call_data: dict) -> Optional[dict]:
     call_id = call_data.get("id")
     status_in_payload = call_data.get("status")
 
-    # FIX H2: Filtrar llamadas que Vapi creó pero nunca conectaron.
-    # Indicadores: sin transcript, sin duración, sin ended_reason.
-    # Antes del FIX H1 estas llegaban con status='queued' y process_call las rechazaba.
-    # Ahora que forzamos 'ended', necesitamos filtrarlas explícitamente.
+    # FIX H3: Filtrar llamadas que Vapi creó pero nunca conectaron.
+    # Vapi retorna duration=None para casi todas las llamadas (no es un indicador confiable).
+    # El único indicador confiable es el transcript: si está vacío, no hubo conversación.
     transcript = call_data.get("transcript") or ""
-    duration = call_data.get("duration") or call_data.get("durationSeconds") or 0
     ended_reason = call_data.get("endedReason") or call_data.get("ended_reason") or ""
-    has_real_data = bool(transcript.strip()) or (duration and int(duration) > 0)
-    if not has_real_data:
-        log.info(f"process_single_call_realtime [{call_id}]: llamada sin datos (transcript vacío, duration=0, ended_reason='{ended_reason}') — saltando (FIX H2)")
+    if not transcript.strip():
+        log.info(f"process_single_call_realtime [{call_id}]: llamada sin transcript (ended_reason='{ended_reason}') — saltando (FIX H3)")
         return None
 
     if status_in_payload != "ended":
