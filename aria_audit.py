@@ -770,7 +770,8 @@ def register_no_contesto(call_data: dict) -> Optional[dict]:
 # PROCESO PRINCIPAL DE AUDITORÍA
 # ============================================================
 
-def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
+def process_call(call_data: dict, already_audited: set, silent: bool = False) -> Optional[dict]:
+    """silent=True: no enviar notificación Telegram individual (usado en re-audit manual)."""
     call_id = call_data.get("id")
     if call_id in already_audited:
         return None
@@ -782,13 +783,13 @@ def process_call(call_data: dict, already_audited: set) -> Optional[dict]:
             return None
         _calls_in_progress.add(call_id)
     try:
-        return _process_call_inner(call_data, already_audited, call_id)
+        return _process_call_inner(call_data, already_audited, call_id, silent=silent)
     finally:
         with _calls_in_progress_lock:
             _calls_in_progress.discard(call_id)
 
 
-def _process_call_inner(call_data: dict, already_audited: set, call_id: str) -> Optional[dict]:
+def _process_call_inner(call_data: dict, already_audited: set, call_id: str, silent: bool = False) -> Optional[dict]:
     log.info("Processing call: " + call_id)
     customer = call_data.get("customer", {}) or {}
     phone = customer.get("number", "")
@@ -910,16 +911,17 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str) -> 
             _correction_id = str(correction_saved.get("id"))
 
     contact_name = ghl_fields.get("contact_full_name") if ghl_fields else None
-    telegram_notify_call(
-        call_id=call_id, phone=phone,
-        original_outcome=original_outcome, aria_outcome=aria_outcome,
-        confidence=aria_confidence, reasoning=audit_result.get("reasoning"),
-        errors=audit_result.get("errors_detected", []),
-        playbook_score=audit_result.get("playbook_adherence_score"),
-        contact_name=contact_name, call_ended_at=ended_at,
-        duration_seconds=duration_seconds,
-        has_discrepancy=has_discrepancy, correction_id=_correction_id,
-    )
+    if not silent:
+        telegram_notify_call(
+            call_id=call_id, phone=phone,
+            original_outcome=original_outcome, aria_outcome=aria_outcome,
+            confidence=aria_confidence, reasoning=audit_result.get("reasoning"),
+            errors=audit_result.get("errors_detected", []),
+            playbook_score=audit_result.get("playbook_adherence_score"),
+            contact_name=contact_name, call_ended_at=ended_at,
+            duration_seconds=duration_seconds,
+            has_discrepancy=has_discrepancy, correction_id=_correction_id,
+        )
 
     return {
         "call_id": call_id,
@@ -1035,7 +1037,10 @@ def _records_to_results(records: list) -> list:
             "has_discrepancy": r.get("audit_status") == "discrepancy_found",
             "audit_status": r.get("audit_status"),
             "errors_count": len(r.get("errors_detected") or []),
-            "errors_detected_types": [e.get("type") for e in (r.get("errors_detected") or [])],
+            "errors_detected_types": [
+                e.get("type") if isinstance(e, dict) else str(e)
+                for e in (r.get("errors_detected") or [])
+            ],
             "playbook_score": r.get("playbook_adherence_score"),
             "duration_seconds": r.get("call_duration_seconds"),
             "ghl_contact_id": r.get("ghl_contact_id"),
@@ -1087,10 +1092,22 @@ def calculate_daily_metrics(results: list, audit_date: str) -> dict:
 
 
 def _get_top_errors(records: list, limit: int = 5) -> list:
+    """FIX: errors_detected son objetos {type, severity, description} o strings."""
     error_counts = {}
     for r in records:
-        for err in (r.get("errors_detected") or []):
-            t = err.get("type", "unknown")
+        errs = r.get("errors_detected") or []
+        if isinstance(errs, str):
+            try:
+                errs = json.loads(errs)
+            except Exception:
+                errs = []
+        for err in errs:
+            if isinstance(err, dict):
+                t = err.get("type", "unknown")
+            elif isinstance(err, str):
+                t = err
+            else:
+                continue
             error_counts[t] = error_counts.get(t, 0) + 1
     sorted_errors = sorted(error_counts.items(), key=lambda x: x[1], reverse=True)
     return [{"type": t, "count": c} for t, c in sorted_errors[:limit]]
@@ -1136,7 +1153,7 @@ def _build_report_from_vapi(utc_start: str, utc_end: str, label: str, chat_id: s
 
     records = supabase_query(
         "call_audits",
-        "created_at=gte." + utc_start + "&created_at=lt." + utc_end + "&limit=1000"
+        "call_started_at=gte." + utc_start + "&call_started_at=lt." + utc_end + "&limit=1000"
     )
 
     results = _records_to_results(records)
@@ -1180,6 +1197,7 @@ def _format_report_telegram(data: dict) -> str:
     score_emoji = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
     score_bar = "█" * (score // 10) + "░" * (10 - score // 10)
 
+    connected = total - no_contesto
     lines = [
         "📊 <b>ARIA · " + data["label"] + "</b>",
         "━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -1195,8 +1213,8 @@ def _format_report_telegram(data: dict) -> str:
         "  ⚙️ Error técnico:  <b>" + str(error_tecnico) + "</b>",
         "",
         "📈 <b>MÉTRICAS</b>",
-        "  Conversión:    <b>" + str(round(conversion, 1)) + "%</b>",
-        "  Contacto:      <b>" + str(round(contact_rate, 1)) + "%</b>",
+        "  Conversión:    <b>" + str(round(conversion, 1)) + "%</b>  <i>(citas / llamadas contestadas: " + str(agendo) + "/" + str(connected) + ")</i>",
+        "  Contacto:      <b>" + str(round(contact_rate, 1)) + "%</b>  <i>(contestadas / totales: " + str(connected) + "/" + str(total) + ")</i>",
         "  Score Elena:   " + score_emoji + " <b>" + str(score) + "/100</b> " + score_bar,
     ]
 
@@ -1376,7 +1394,7 @@ def _handle_audit(args: str, chat_id: str):
 
 
 def _run_audit_range(utc_start: str, utc_end: str, label: str) -> dict:
-    """FIX #4: reporta nuevas + ya auditadas + sin transcript."""
+    """FIX #4: reporta nuevas + ya auditadas + sin transcript. FIX #10: no spamea notificaciones por llamada."""
     vapi_calls = fetch_vapi_calls_range(utc_start, utc_end, limit=500)
     ended_calls = [c for c in vapi_calls if c.get("status") == "ended"]
     already_audited = get_audited_ids_in_range(utc_start, utc_end)
@@ -1398,7 +1416,8 @@ def _run_audit_range(utc_start: str, utc_end: str, label: str) -> dict:
                 auto_classified += 1
                 already_audited.add(call_id)
         else:
-            result = process_call(call, already_audited)
+            # silent=True: no enviar notificación individual por llamada durante re-audit manual
+            result = process_call(call, already_audited, silent=True)
             if result:
                 new_audited += 1
                 if result.get("has_discrepancy"):
@@ -1416,15 +1435,21 @@ def _run_audit_range(utc_start: str, utc_end: str, label: str) -> dict:
 
 
 def _send_audit_summary(summary: dict, label: str, chat_id: str):
-    """FIX #4: muestra nuevas + ya auditadas + sin transcript."""
+    """FIX: muestra resumen consolidado. No spamea notificaciones individuales por llamada."""
+    disc = summary["discrepancies"]
+    disc_note = (
+        "\n🔍 Discrepancias: <b>" + str(disc) + "</b> — usa /reporte para ver outcomes actualizados"
+        if disc > 0 else
+        "\n✅ Sin discrepancias GHL vs ARIA"
+    )
     text = (
         "✅ <b>Audit completado — " + label + "</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "📞 Total en Vapi: <b>" + str(summary["vapi_total"]) + "</b>\n"
         "🆕 Nuevas auditadas con Claude: <b>" + str(summary["new_audited"]) + "</b>\n"
         "🤖 Auto-clasificadas (sin transcript): <b>" + str(summary["auto_classified"]) + "</b>\n"
-        "✓ Ya estaban en Supabase: <b>" + str(summary["skipped_already"]) + "</b>\n"
-        "🔍 Discrepancias encontradas: <b>" + str(summary["discrepancies"]) + "</b>"
+        "✓ Ya estaban en Supabase: <b>" + str(summary["skipped_already"]) + "</b>"
+        + disc_note
     )
     telegram_send(text, chat_id=chat_id)
 
@@ -1438,7 +1463,7 @@ def _send_pattern_analysis(chat_id: str, days: int = 7, utc_start: str = None, u
 
     records = supabase_query(
         "call_audits",
-        "created_at=gte." + utc_start + "&created_at=lt." + utc_end + "&limit=1000"
+        "call_started_at=gte." + utc_start + "&call_started_at=lt." + utc_end + "&limit=1000"
     )
 
     if not records:
@@ -1514,17 +1539,37 @@ def _send_pattern_analysis(chat_id: str, days: int = 7, utc_start: str = None, u
 # ============================================================
 
 def _send_errors_report(chat_id: str, days: int = 7):
-    """FIX #1: usa _utc_cutoff() en vez de isoformat()."""
+    """FIX: errors_detected son objetos {type, severity, description}. Soporta cualquier número de días."""
     cutoff = _utc_cutoff(days=days)
+    # FIX: no incluir &select= dentro de supabase_query — usar query separada
     records = supabase_query(
         "call_audits",
-        "created_at=gte." + cutoff + "&select=errors_detected&limit=1000"
+        "created_at=gte." + cutoff + "&limit=1000"
     )
     error_counts = {}
+    severity_map = {}  # type -> worst severity
+    severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
     for r in records:
-        for err in (r.get("errors_detected") or []):
-            t = err.get("type", "unknown")
+        errs = r.get("errors_detected") or []
+        if isinstance(errs, str):
+            try:
+                import json as _json
+                errs = _json.loads(errs)
+            except Exception:
+                errs = []
+        for err in errs:
+            if isinstance(err, dict):
+                t = err.get("type", "unknown")
+                sev = err.get("severity", "low").lower()
+            elif isinstance(err, str):
+                t = err
+                sev = "low"
+            else:
+                continue
             error_counts[t] = error_counts.get(t, 0) + 1
+            prev_sev = severity_map.get(t, "low")
+            if severity_order.get(sev, 0) > severity_order.get(prev_sev, 0):
+                severity_map[t] = sev
     if not error_counts:
         telegram_send(
             "✅ Sin errores detectados en los últimos " + str(days) + " días.\n(Basado en " + str(len(records)) + " llamadas auditadas)",
@@ -1532,11 +1577,14 @@ def _send_errors_report(chat_id: str, days: int = 7):
         )
         return
     sorted_errors = sorted(error_counts.items(), key=lambda x: x[1], reverse=True)
+    sev_icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "⚪"}
     text = "⚠️ <b>Top errores de Elena (últimos " + str(days) + "d)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
     text += "📊 Basado en " + str(len(records)) + " llamadas auditadas\n\n"
     for i, (err_type, count) in enumerate(sorted_errors[:10], 1):
         bar = "█" * min(count, 10)
-        text += str(i) + ". <b>" + err_type + "</b> ×" + str(count) + " " + bar + "\n"
+        sev = severity_map.get(err_type, "low")
+        icon = sev_icon.get(sev, "⚪")
+        text += str(i) + ". " + icon + " <b>" + err_type + "</b> ×" + str(count) + " " + bar + "\n"
     telegram_send(text, chat_id=chat_id)
 
 
@@ -1551,7 +1599,7 @@ def _send_score_report(chat_id: str):
         day_label = (now_edt - timedelta(days=i)).strftime("%Y-%m-%d")
         day_records = supabase_query(
             "call_audits",
-            "created_at=gte." + utc_start + "&created_at=lt." + utc_end + "&limit=500"
+            "call_started_at=gte." + utc_start + "&call_started_at=lt." + utc_end + "&limit=500"
         )
         if day_records:
             results = _records_to_results(day_records)
@@ -1562,6 +1610,7 @@ def _send_score_report(chat_id: str):
         telegram_send("📊 Sin datos suficientes para calcular el score.", chat_id=chat_id)
         return
     text = "⭐ <b>Score Elena — Últimos 7 días</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    text += "📌 Conv = citas agendadas / llamadas contestadas\n\n"
     for r in records_7d:
         score = r["score"]
         bar = "█" * (score // 10) + "░" * (10 - score // 10)
@@ -1655,7 +1704,18 @@ def _send_intel_report(chat_id: str, days: int = 7):
     cutoff = _utc_cutoff(days=days)
     records = supabase_query("call_intelligence", "created_at=gte." + cutoff + "&limit=500")
     if not records:
-        telegram_send("📊 Sin inteligencia de cliente en los últimos " + str(days) + " días.", chat_id=chat_id)
+        # Fallback: buscar en call_audits con client_intelligence en el campo raw
+        audit_records = supabase_query(
+            "call_audits",
+            "call_started_at=gte." + cutoff + "&limit=1000"
+        )
+        real_convos_count = sum(1 for r in audit_records if r.get("transcript_text") and len(r.get("transcript_text") or "") > 200)
+        telegram_send(
+            "📊 Sin inteligencia de cliente en los últimos " + str(days) + " días.\n"
+            "La tabla call_intelligence se llena con llamadas nuevas procesadas a partir de ahora.\n"
+            "Llamadas con conversación real en el período: <b>" + str(real_convos_count) + "</b>",
+            chat_id=chat_id
+        )
         return
 
     real_convos = [r for r in records if r.get("call_type") == "real_conversation"]
@@ -1729,7 +1789,35 @@ def _send_hot_leads(chat_id: str):
         "created_at=gte." + cutoff + "&buying_stage=in.(intent,ready_to_book)&limit=100"
     )
     if not records:
-        telegram_send("📊 Sin leads calientes en los últimos 7 días.", chat_id=chat_id)
+        # call_intelligence se llena con llamadas nuevas desde ahora
+        # Mientras tanto, buscar leads con no_agendo en call_audits que tuvieron conversación real
+        audit_cutoff = _utc_cutoff(days=7)
+        hot_from_audits = supabase_query(
+            "call_audits",
+            "call_started_at=gte." + audit_cutoff + "&aria_outcome=eq.no_agendo&limit=100"
+        )
+        real_hot = [r for r in hot_from_audits if r.get("transcript_text") and len(r.get("transcript_text") or "") > 300]
+        if not real_hot:
+            telegram_send(
+                "📊 Sin leads calientes en los últimos 7 días.\n"
+                "La inteligencia de cliente (zonas, objeciones, interés) se acumulará con llamadas nuevas.",
+                chat_id=chat_id
+            )
+            return
+        text = (
+            "🔥 <b>Leads No Agendaron (con conversación real)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Total: <b>" + str(len(real_hot)) + "</b> leads con conversación real\n"
+            "<i>Nota: análisis de interés/zonas disponible para llamadas nuevas</i>\n\n"
+        )
+        for i, r in enumerate(real_hot[:10], 1):
+            phone = r.get("phone_number", "N/A")
+            dur = r.get("call_duration_seconds")
+            dur_str = str(int(dur) // 60) + "m" + str(int(dur) % 60) + "s" if dur else "N/A"
+            started = (r.get("call_started_at") or "")[:10]
+            reasoning = (r.get("aria_reasoning") or "")[:80]
+            text += str(i) + ". <b>" + phone + "</b> | " + started + " | " + dur_str + "\n   " + reasoning + "\n\n"
+        telegram_send(text[:4096], chat_id=chat_id)
         return
 
     hot_leads = []
@@ -1836,9 +1924,11 @@ def _send_status(chat_id: str):
 
 def _send_contact_history(chat_id: str, phone: str):
     phone_clean = phone.replace("+", "").replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
+    last10 = phone_clean[-10:]
+    # FIX: usar ilike para búsqueda case-insensitive y flexible con el prefijo +1
     records = supabase_query(
         "call_audits",
-        "phone_number=like.%" + phone_clean[-10:] + "&order=created_at.desc&limit=20"
+        "phone_number=ilike.%25" + last10 + "&order=call_started_at.desc&limit=20"
     )
     if not records:
         telegram_send("📊 Sin historial para el teléfono: " + phone, chat_id=chat_id)
@@ -1852,12 +1942,17 @@ def _send_contact_history(chat_id: str, phone: str):
     agendo_count = sum(1 for r in records if r.get("aria_outcome") == "agendo")
     text += "✅ Agendó: " + str(agendo_count) + " vez/veces\n\n"
     for i, r in enumerate(records[:10], 1):
-        ts = (r.get("created_at") or "")[:10]
+        ts = (r.get("call_started_at") or r.get("created_at") or "")[:10]
         outcome = r.get("aria_outcome") or r.get("original_outcome") or "?"
         dur = r.get("call_duration_seconds")
-        dur_str = str(dur) + "s" if dur else "N/A"
+        m, s = divmod(int(dur), 60) if dur else (0, 0)
+        dur_str = str(m) + "m" + str(s).zfill(2) + "s" if dur else "N/A"
         outcome_label = OUTCOME_LABELS.get(outcome, outcome)
-        text += str(i) + ". " + ts + " | " + outcome_label + " | " + dur_str + "\n"
+        reasoning = (r.get("aria_reasoning") or "")[:60]
+        text += str(i) + ". " + ts + " | <b>" + outcome_label + "</b> | " + dur_str
+        if reasoning:
+            text += "\n   <i>" + reasoning + "</i>"
+        text += "\n"
     telegram_send(text[:4096], chat_id=chat_id)
 
 
@@ -1872,7 +1967,7 @@ def _send_tendencia(chat_id: str):
         day_label = (now_edt - timedelta(days=i)).strftime("%d/%m")
         day_records = supabase_query(
             "call_audits",
-            "created_at=gte." + utc_start + "&created_at=lt." + utc_end + "&limit=500"
+            "call_started_at=gte." + utc_start + "&call_started_at=lt." + utc_end + "&limit=500"
         )
         if day_records:
             results = _records_to_results(day_records)
@@ -1892,17 +1987,18 @@ def _send_tendencia(chat_id: str):
     text = (
         "📈 <b>Tendencia Score Elena — Últimos 30 días</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Mejor: " + best["date"] + " (" + str(best["score"]) + "/100) | "
-        "Peor: " + worst["date"] + " (" + str(worst["score"]) + "/100) | "
-        "Prom: " + str(round(avg)) + "/100\n\n"
+        "🟢 ≥70 bueno | 🟡 50-69 regular | 🔴 <50 bajo\n"
+        "Mejor: <b>" + best["date"] + " " + str(best["score"]) + "/100</b> | "
+        "Peor: <b>" + worst["date"] + " " + str(worst["score"]) + "/100</b> | "
+        "Prom: <b>" + str(round(avg)) + "/100</b>\n\n"
     )
 
     for s in scores_reversed:
         score = s["score"]
-        bar_len = score // 5
-        bar = "█" * bar_len
+        bar_len = score // 10
+        bar = "█" * bar_len + "░" * (10 - bar_len)
         emoji = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
-        text += emoji + " " + s["date"] + ": " + bar + " " + str(score) + "\n"
+        text += emoji + " " + s["date"] + ": <b>" + str(score) + "/100</b> " + bar + " (" + str(s["calls"]) + " llamadas)\n"
 
     telegram_send(text[:4096], chat_id=chat_id)
 
