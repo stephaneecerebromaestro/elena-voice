@@ -726,20 +726,23 @@ def register_no_contesto(call_data: dict) -> Optional[dict]:
     """
     Registrar una llamada sin transcript como no_contesto automático.
     No usa Claude. Cierra el gap de cobertura de 45% → 100%.
+    FIX: usa createdAt como fallback cuando startedAt/endedAt están vacíos
+    (llamadas con endedAt=None en Vapi — buzones, no-answer inmediatos).
     """
     call_id = call_data.get("id")
     customer = call_data.get("customer", {}) or {}
     phone = customer.get("number", "")
-    started_at = call_data.get("startedAt")
-    ended_at = call_data.get("endedAt")
+    # FIX A: fallback a createdAt cuando startedAt/endedAt están vacíos
+    created_at = call_data.get("createdAt") or call_data.get("created_at")
+    started_at = call_data.get("startedAt") or created_at
+    ended_at = call_data.get("endedAt") or created_at
     ended_reason = call_data.get("endedReason", "")
-
-    duration_seconds = None
-    if started_at and ended_at:
+    duration_seconds = 0  # default 0 para llamadas sin conexión real
+    if started_at and ended_at and started_at != ended_at:
         try:
             s = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
             e = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
-            duration_seconds = int((e - s).total_seconds())
+            duration_seconds = max(0, int((e - s).total_seconds()))
         except Exception:
             pass
 
@@ -1244,7 +1247,9 @@ def handle_telegram_command(command: str, args: str = "", chat_id: str = None) -
         elif command == "/audit":
             _handle_audit(args.strip(), chat_id)
         elif command == "/errores":
-            days = int(args.strip()) if args.strip().isdigit() else 7
+            # FIX D: parsear argumento numérico correctamente (acepta /errores 2, /errores 14, etc.)
+            arg_clean = (args or "").strip()
+            days = max(1, min(int(arg_clean), 90)) if arg_clean.isdigit() else 7
             _send_errors_report(chat_id, days=days)
         elif command == "/score":
             _send_score_report(chat_id)
@@ -1923,15 +1928,22 @@ def _send_status(chat_id: str):
 
 
 def _send_contact_history(chat_id: str, phone: str):
-    phone_clean = phone.replace("+", "").replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
-    last10 = phone_clean[-10:]
-    # FIX: usar ilike para búsqueda case-insensitive y flexible con el prefijo +1
+    # FIX C: PostgREST usa 'like.*X*' para wildcard, no 'ilike.%25X'
+    phone_clean = "".join(c for c in phone if c.isdigit())
+    last10 = phone_clean[-10:] if len(phone_clean) >= 10 else phone_clean
+    # Intentar con los últimos 10 dígitos (sin código de país)
     records = supabase_query(
         "call_audits",
-        "phone_number=ilike.%25" + last10 + "&order=call_started_at.desc&limit=20"
+        "phone_number=like.*" + last10 + "*&order=call_started_at.desc&limit=20"
     )
+    # Fallback: número completo si no encontró
+    if not records and len(phone_clean) > 10:
+        records = supabase_query(
+            "call_audits",
+            "phone_number=like.*" + phone_clean + "*&order=call_started_at.desc&limit=20"
+        )
     if not records:
-        telegram_send("📊 Sin historial para el teléfono: " + phone, chat_id=chat_id)
+        telegram_send("📊 Sin historial para el teléfono: [" + phone + "]\nVerifica que el número esté en formato +17865533777", chat_id=chat_id)
         return
     text = (
         "📱 <b>Historial de Contacto</b>\n"
@@ -1957,33 +1969,54 @@ def _send_contact_history(chat_id: str, phone: str):
 
 
 def _send_tendencia(chat_id: str):
+    # FIX E: una sola query de 30 días, agrupar en Python (antes: 30 queries = timeout)
     import pytz
     edt = pytz.timezone("America/New_York")
     now_edt = datetime.now(edt)
-
+    # Una sola query para los últimos 30 días
+    cutoff_30d = (now_edt - timedelta(days=30)).astimezone(__import__('pytz').utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    all_records = supabase_query(
+        "call_audits",
+        "call_started_at=gte." + cutoff_30d + "&limit=2000"
+    )
+    if not all_records:
+        telegram_send("📊 Sin datos en los últimos 30 días.", chat_id=chat_id)
+        return
+    # Agrupar por día EDT
+    from collections import defaultdict
+    day_buckets = defaultdict(list)
+    for r in all_records:
+        ts = r.get("call_started_at") or r.get("created_at") or ""
+        if not ts:
+            continue
+        try:
+            dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            dt_edt = dt_utc.astimezone(edt)
+            day_key = dt_edt.strftime("%d/%m")
+            day_buckets[day_key].append(r)
+        except Exception:
+            continue
+    if not day_buckets:
+        telegram_send("📊 Sin datos suficientes para mostrar tendencia.", chat_id=chat_id)
+        return
+    # Calcular score por día
     scores = []
     for i in range(30):
-        utc_start, utc_end = _edt_day_range(i)
-        day_label = (now_edt - timedelta(days=i)).strftime("%d/%m")
-        day_records = supabase_query(
-            "call_audits",
-            "call_started_at=gte." + utc_start + "&call_started_at=lt." + utc_end + "&limit=500"
-        )
-        if day_records:
-            results = _records_to_results(day_records)
+        day_edt = now_edt - timedelta(days=i)
+        day_label = day_edt.strftime("%d/%m")
+        records_day = day_buckets.get(day_label, [])
+        if records_day:
+            results = _records_to_results(records_day)
             metrics = calculate_daily_metrics(results, day_label)
             score = _calculate_elena_score(metrics)
             scores.append({"date": day_label, "score": score, "calls": metrics.get("total_calls", 0)})
-
     if not scores:
         telegram_send("📊 Sin datos suficientes para mostrar tendencia.", chat_id=chat_id)
         return
-
     scores_reversed = list(reversed(scores))
     best = max(scores_reversed, key=lambda x: x["score"])
     worst = min(scores_reversed, key=lambda x: x["score"])
     avg = sum(s["score"] for s in scores_reversed) / len(scores_reversed)
-
     text = (
         "📈 <b>Tendencia Score Elena — Últimos 30 días</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1992,14 +2025,12 @@ def _send_tendencia(chat_id: str):
         "Peor: <b>" + worst["date"] + " " + str(worst["score"]) + "/100</b> | "
         "Prom: <b>" + str(round(avg)) + "/100</b>\n\n"
     )
-
     for s in scores_reversed:
         score = s["score"]
         bar_len = score // 10
         bar = "█" * bar_len + "░" * (10 - bar_len)
         emoji = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
         text += emoji + " " + s["date"] + ": <b>" + str(score) + "/100</b> " + bar + " (" + str(s["calls"]) + " llamadas)\n"
-
     telegram_send(text[:4096], chat_id=chat_id)
 
 
@@ -2388,11 +2419,16 @@ def _aria_polling_loop(interval_seconds: int = 180):
                 call_id = call_data.get("id", "?")
                 transcript = call_data.get("transcript", "") or ""
                 if len(transcript) < 50:
-                    # Registrar como no_contesto automático
-                    saved = register_no_contesto(call_data)
-                    if saved:
-                        log.info("ARIA Polling [" + call_id + "]: auto-clasificado como no_contesto")
-                        already_audited.add(call_id)
+                    # FIX B: registrar como no_contesto, verificar que guardó
+                    try:
+                        saved = register_no_contesto(call_data)
+                        if saved:
+                            log.info("ARIA Polling [" + call_id + "]: auto-clasificado como no_contesto (" + str(call_data.get("endedReason","?")) + ")")
+                            already_audited.add(call_id)
+                        else:
+                            log.warning("ARIA Polling [" + call_id + "]: register_no_contesto retornó None — reintentará en próximo ciclo")
+                    except Exception as e:
+                        log.error("ARIA Polling [" + call_id + "]: error en register_no_contesto — " + str(e))
                     continue
                 try:
                     log.info("ARIA Polling [" + call_id + "]: auditando...")
