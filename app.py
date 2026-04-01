@@ -1854,16 +1854,15 @@ def aria_telegram_webhook():
                 aria_log.info(f"TELEGRAM COMMAND: {command} {args} from {chat_id}")
                 def _handle_cmd(cmd, a, cid):
                     try:
-                        import sys, importlib
-                        if 'aria_audit' in sys.modules:
-                            mod = importlib.reload(sys.modules['aria_audit'])
-                        else:
-                            mod = importlib.import_module('aria_audit')
-                        mod.telegram_handle_command(cmd, a, cid)
+                        # FIX: NO usar importlib.reload() — recarga el módulo en un thread
+                        # donde os.getenv() puede devolver vacío, rompiendo Supabase/Anthropic.
+                        # Usar el módulo ya cargado en el proceso principal (siempre disponible).
+                        import aria_audit as _mod
+                        _mod.telegram_handle_command(cmd, a, cid)
                     except Exception as _e:
                         aria_log.error(f"TELEGRAM CMD error: {_e}", exc_info=True)
                         BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-                        if BOT_TOKEN and chat_id:
+                        if BOT_TOKEN and cid:
                             http_requests.post(
                                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                                 json={"chat_id": cid, "text": f"⚠️ Error: {str(_e)[:100]}"},
