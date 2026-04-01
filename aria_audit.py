@@ -764,7 +764,7 @@ def register_no_contesto(call_data: dict) -> Optional[dict]:
         "aria_outcome": "no_contesto",
         "aria_confidence": 1.0,
         "aria_reasoning": "Auto-clasificado: sin transcript (endedReason=" + ended_reason + ", dur=" + str(duration_seconds) + "s)",
-        "audit_status": "auto_classified",
+        "audit_status": "audited",  # FIX 23514: auto_classified no está en constraint valid_status
         "errors_detected": [],
         "audit_model": "auto",
         "audit_version": ARIA_VERSION,
@@ -825,10 +825,19 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str, sil
     aria_outcome = audit_result.get("correct_outcome")
     aria_confidence = audit_result.get("confidence", 0.0)
 
+    # FIX 23514: sanitizar outcomes — solo valores permitidos por constraint valid_outcome
+    _VALID_OUTCOMES = {'agendo', 'no_agendo', 'no_contesto', 'llamar_luego', 'error_tecnico', 'no_interesado', None}
+    if aria_outcome not in _VALID_OUTCOMES:
+        log.warning(f"aria_outcome inválido '{aria_outcome}' → mapeado a None")
+        aria_outcome = None
+
     ghl_fields = {}
     if ghl_contact_id:
         ghl_fields = get_ghl_contact_fields(ghl_contact_id)
         original_outcome = ghl_fields.get("elena_last_outcome")
+        if original_outcome not in _VALID_OUTCOMES:
+            log.warning(f"original_outcome inválido '{original_outcome}' de GHL → mapeado a None")
+            original_outcome = None
 
     has_discrepancy = (
         original_outcome is not None and
