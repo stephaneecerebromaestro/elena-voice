@@ -2224,7 +2224,7 @@ def _send_tendencia_inner(chat_id: str):
     text = (
         "📈 <b>Tendencia Score Elena — Últimos 30 días</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🟢 ≥70 bueno | 🟡 50-69 regular | 🔴 <50 bajo\n"
+        "🟢 ≥70 bueno | 🟡 50-69 regular | 🔴 &lt;50 bajo\n"
         "Mejor: <b>" + best["date"] + " " + str(best["score"]) + "/100</b> | "
         "Peor: <b>" + worst["date"] + " " + str(worst["score"]) + "/100</b> | "
         "Prom: <b>" + str(round(avg)) + "/100</b>\n\n"
