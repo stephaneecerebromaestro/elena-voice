@@ -1,5 +1,5 @@
 # ELENA + ARIA — Documento de Handoff Maestro
-**Versión:** 2.1.1 | **Fecha:** 31 marzo 2026 | **Propietario:** Juan Garcia — Laser Place Miami
+**Versión:** 2.2.0 | **Fecha:** 4 abril 2026 | **Propietario:** Juan Garcia — Laser Place Miami
 
 > **Instrucciones para el agente que recibe este documento:** Lee este archivo completo antes de tocar cualquier sistema. Contiene todos los IDs, claves, arquitectura, lógica de negocio, procedimientos operativos y contexto histórico del sistema. No asumas nada que no esté aquí.
 
@@ -25,20 +25,21 @@
 
 **Elena** es un agente de voz con IA que atiende llamadas inbound y outbound para **Laser Place Miami** (4649 Ponce De León Boulevard, Suite 302, Coral Gables, FL 33146). Su único objetivo es agendar evaluaciones gratuitas de Botox (Skin Reveal Analysis con Laury). No vende tratamientos por teléfono.
 
-**ARIA** (Autonomous Review & Intelligence Agent) es el sistema de auditoría autónoma que monitorea cada llamada de Elena, detecta errores de playbook, clasifica outcomes, notifica a Juan por Telegram y genera reportes diarios/semanales.
+**ARIA** (Autonomous Review & Intelligence Agent) es el sistema de auditoría autónoma que monitorea cada llamada de Elena, detecta errores de playbook, clasifica outcomes, notifica a Juan por Telegram, genera reportes diarios/semanales, y extrae inteligencia de cliente (objeciones, zonas de interés, nivel de compra).
 
 El sistema opera en español (primario) e inglés (secundario), con leads provenientes de Facebook Ads que entran a GHL con el tag `botox_en_proceso`.
 
-### Métricas actuales (31 marzo 2026)
+### Métricas actuales (4 abril 2026)
 
 | Métrica | Valor |
 |---------|-------|
-| Total llamadas procesadas | ~100 |
+| Total llamadas procesadas | ~120+ |
 | Tasa de contacto (>30s) | ~18% |
-| Tasa de conversión (conversación → cita) | ~6.7% histórico / en mejora con V2.1.1 |
-| Bookings confirmados post-V2.1.1 | 1 (Juan Garcia, 31/03/2026) |
-| Versión del servidor | v17.48 |
-| Versión del prompt | V2.1.1 |
+| Tasa de conversión (conversación → cita) | ~6.7% histórico / mejorando con V2.2.0 |
+| Versión del servidor | v17.57 |
+| Versión del prompt | V2.2.0 |
+| Versión de ARIA | 3.1.1 |
+| Modelo de auditoría | claude-sonnet-4-5 |
 
 ---
 
@@ -60,12 +61,12 @@ Vapi (Orquestador de voz)
   Teléfonos: Twilio +17869835076 / Vapi nativo +17867430129
        │ tool calls
        ▼
-Render (Servidor Flask — app.py v17.48)
+Render (Servidor Flask — app.py v17.57)
   URL: https://elena-pdem.onrender.com
   Endpoint principal: /api/vapi/server-url
        │
        ├──► GHL API v2 (contactos, calendario, citas)
-       ├──► Supabase (call_audits, aria_corrections)
+       ├──► Supabase (call_audits, call_intelligence, aria_corrections)
        └──► Telegram Bot (@aria_elena_bot) — notificaciones ARIA
 ```
 
@@ -127,7 +128,7 @@ Render (Servidor Flask — app.py v17.48)
 ```
 1. Lead llama a +17869835076 (Twilio)
 2. Twilio → Vapi (serverUrl configurado en el phone number)
-3. Vapi inicia la conversación con Elena (GPT-4o-mini + prompt V2.1.1)
+3. Vapi inicia la conversación con Elena (GPT-4o-mini + prompt V2.2.0)
 4. Elena saluda: "Hola, habla Elena de Laser Place Miami..."
 5. Durante la conversación, Elena ejecuta tool calls:
    a. get_contact({}) — busca el contacto por callerPhone
@@ -140,7 +141,8 @@ Render (Servidor Flask — app.py v17.48)
 10. Escribe el outcome en el campo elena_last_outcome del contacto en GHL
 11. Activa el tag elena_resultado_botox → dispara el Workflow de GHL
 12. ARIA (polling cada 3 min) detecta la llamada nueva y la audita con Claude
-13. ARIA envía notificación Telegram a Juan con el resultado
+13. ARIA extrae inteligencia de cliente y la guarda en call_intelligence
+14. ARIA envía notificación Telegram a Juan con el resultado
 ```
 
 ### Servidor Flask — Endpoints principales
@@ -169,6 +171,8 @@ Render (Servidor Flask — app.py v17.48)
 | `get_current_time` | Para calcular ventanas de callback | Devuelve hora Miami (EDT) |
 | `schedule_callback` | Cuando cliente pide que lo llamen después | Escribe elena_callback_time y elena_callback_hours en GHL |
 
+> **CRÍTICO:** `model.toolIds` está VACÍO intencionalmente. Los tools nativos de GHL fueron removidos porque su OAuth session (GoHighLevelMCPCredential) está rota/expirada. Todos los tools usan `model.tools` como inline server-url tools. NO agregar toolIds de vuelta sin verificar que el OAuth de GHL esté activo.
+
 ---
 
 ## 5. Elena — El Agente de Voz
@@ -187,17 +191,31 @@ Render (Servidor Flask — app.py v17.48)
 | Background sound | Off |
 | First message | "Hola, habla Elena de Laser Place Miami. Vi tu interés en el Botox y quería hacerte unas preguntas rápidas. ¿Tienes dos minutos?" |
 
-### Prompt V2.1.1 — Arquitectura modular (4 bloques)
+### Prompt V2.2.0 — Arquitectura modular (5 bloques)
 
-El prompt tiene 154 líneas y está en `/home/ubuntu/elena-vapi-server/system_prompt.txt` y en GitHub.
+El prompt tiene 179 líneas y está en `system_prompt.txt` en GitHub. Vapi tiene 19,567 chars activos (incluye la sección de fecha inyectada por `/update-date`).
 
-**Bloque 1 — System Kernel & Guardrails:** Identidad, reglas absolutas de comportamiento, STATE LOCK (fix B2/B3), manejo de silencios, buzón de voz, formato de horas.
+**Bloque 1 — System Kernel & Guardrails:** Identidad, reglas absolutas de comportamiento, diccionario STT ampliado (fix V2.2), STATE LOCK (fix B2/B3), manejo de silencios, detección de sistemas automatizados e IVR (fix V2.2), formato de horas.
 
-**Bloque 2 — State Machine:** Flujo conversacional lineal en 5 estados (Apertura → Exploración → Validación → Propuesta → Confirmación). Excepción: si cliente dice "quiero agendar", salta directo a STATE 4.
+**Bloque 2 — State Machine:** Flujo conversacional lineal en 5 estados (Apertura → Exploración → Validación → Propuesta → Confirmación). Excepción ampliada: lista explícita de frases truncadas por STT que saltan al STATE 4 (fix V2.2). Confirmación antes de booking y verificación final de hora (fix V2.2).
 
-**Bloque 3 — Objection Overrides:** Rescate de "llamar luego" (C2), Pivot C3 para rechazo de Botox con REGLA DE CONTEXTO SRA (fix B4), manejo de experiencia negativa previa, FAQs.
+**Bloque 3 — Objection Overrides:** Rescate de "llamar luego" (C2), Pivot C3 para rechazo de Botox con REGLA DE CONTEXTO SRA (fix B4), manejo de experiencia negativa previa, FAQs, regla dura de 2 rechazos con contador explícito (fix V2.2).
 
-**Bloque 4 — Tool Execution Protocols:** Única fuente de verdad para el uso de tools. Cuándo y cómo usar cada herramienta. Regla de endCall.
+**Bloque 4 — Tool Execution Protocols:** Única fuente de verdad para el uso de tools. Regla anti-contradicción para check_availability (fix V2.2). Cuándo y cómo usar cada herramienta. Regla de endCall.
+
+**Bloque 5 — Base de Conocimiento Clínico:** Información sobre Xeomin, proceso, resultados, zonas, cuidados post, contraindicaciones.
+
+### Fixes aplicados en V2.2.0 (4 abril 2026)
+
+| Fix | Descripción | Error resuelto |
+|-----|-------------|----------------|
+| F1 | Diccionario STT ampliado — "agendar un", "agendar un poquito", "agenda", "una cita" como triggers | `missed_close` ×18 |
+| F2 | Excepción de intención ampliada — lista explícita de frases truncadas por STT | `missed_close` ×18 |
+| F3 | Regla anti-contradicción — nunca declarar disponibilidad antes de ejecutar `check_availability` | `confusion_created` ×26 |
+| F4 | Confirmación antes de booking — confirmar slot elegido antes de `create_booking` | `wrong_info` ×10 |
+| F5 | Verificación final de hora — usar valor exacto del tool result en despedida | `wrong_info` ×10 |
+| F6 | Regla dura de 2 rechazos — contador explícito, PROHIBIDO más pivots después del segundo No | `playbook_violation` ×34 |
+| F7 | Detección de sistemas automatizados ampliada — IVR, asistentes de voz, "press 1", "please hold" | Reducción `premature_greeting` falsos |
 
 ### Lógica de Outcomes (Outcome Classifier en app.py)
 
@@ -243,9 +261,9 @@ El tag `elena_resultado_botox` se agrega al contacto en GHL para disparar el wor
 
 ### Qué hace ARIA
 
-ARIA es un script Python (`aria_audit.py`) que corre como parte del servidor Render. Audita cada llamada de Elena usando Claude (Anthropic), detecta errores de playbook, y notifica a Juan por Telegram.
+ARIA es un script Python (`aria_audit.py`) que corre como parte del servidor Render. Audita cada llamada de Elena usando Claude (Anthropic), detecta errores de playbook, extrae inteligencia de cliente, y notifica a Juan por Telegram.
 
-**ARIA NUNCA modifica el prompt de Elena ni el código del servidor.** Solo observa, audita y notifica.
+**ARIA NUNCA modifica el prompt de Elena ni el código del servidor.** Solo observa, audita, notifica y propone correcciones para aprobación de Juan.
 
 ### Componentes activos
 
@@ -255,40 +273,57 @@ ARIA es un script Python (`aria_audit.py`) que corre como parte del servidor Ren
 | Webhook end-of-call | ✅ Live | Para outbound cuando Vapi lo envía |
 | Notificación Telegram | ✅ Live | 3 niveles: 🟢 (ok) / 🟡 (warning) / 🔴 (error) |
 | Reporte diario | ✅ 8PM EDT | Cron en app.py |
-| Reporte semanal | ✅ Domingo 8AM EDT | Cron en app.py |
-| Comandos Telegram | ✅ Live | Ver lista abajo |
-| Feedback loop | ✅ Live | Aprobar/rechazar correcciones via Telegram |
+| Reporte semanal | ✅ Sábado 9AM EDT | Cron en app.py — errores recurrentes de la semana |
+| Comandos Telegram | ✅ Live | 18 comandos — ver lista abajo |
+| Inteligencia de cliente | ✅ Live | Extrae zonas, objeciones, buying stage, etc. |
+| Few-shot dinámico | ✅ Live | ARIA aprende de aprobaciones/rechazos previos de Juan |
 
-### Comandos Telegram disponibles
+### Comandos Telegram disponibles (ARIA v3.1.1)
 
-| Comando | Qué hace |
-|---------|----------|
-| `/score` | Score de Elena en las últimas 24h |
-| `/audit` | Audita las últimas 5 llamadas manualmente |
-| `/reporte` | Genera reporte inmediato |
-| `/errores` | Lista los errores HIGH más frecuentes |
-| `/eficacia` | Tasa de conversión y métricas clave |
-| `/llamada [call_id]` | Detalle de una llamada específica |
+| Categoría | Comando | Qué hace |
+|-----------|---------|----------|
+| **Reportes** | `/reporte hoy` | Reporte del día en curso |
+| | `/reporte 2d` | Ayer + hoy |
+| | `/reporte 7d` | Últimos 7 días con tabla |
+| | `/reporte mes [nombre]` | Mes completo (ej: `/reporte mes marzo`) |
+| **Audits** | `/audit 24h` | Re-audita últimas 24h |
+| | `/audit 7d` | Re-audita + análisis de patrones |
+| | `/audit mes [nombre]` | Auditoría profunda de un mes |
+| **Diagnóstico** | `/errores [días]` | Top errores de Elena (ej: `/errores 7`) |
+| | `/score` | Score de Elena últimos 7 días |
+| | `/eficacia` | Precisión de ARIA vs clasificación original |
+| | `/llamada [id]` | Detalle completo de una llamada específica |
+| **Inteligencia** | `/intel [días]` | Zonas, objeciones, preguntas frecuentes |
+| | `/leads calientes` | Leads con intención alta sin agendar |
+| | `/backfill [días]` | Poblar inteligencia histórica (~$0.30-0.50) |
+| **Sistema** | `/status` | Estado del sistema en tiempo real |
+| | `/contacto [teléfono]` | Historial completo de un contacto |
+| | `/tendencia` | Gráfico de conversión últimos 30 días |
+| | `/ayuda` | Lista de todos los comandos |
 
-### Tipos de errores que detecta ARIA
+### Tipos de errores que detecta ARIA (definiciones corregidas en V2.2)
 
-| Error | Severidad | Descripción |
-|-------|-----------|-------------|
-| `premature_endcall` | HIGH | Elena cuelga sin razón válida |
-| `missed_close` | HIGH | No aprovecha oportunidad de agendar |
-| `confusion_created` | MEDIUM | Da información contradictoria |
-| `wrong_info` | MEDIUM | Información incorrecta sobre disponibilidad |
-| `repeated_availability_check` | MEDIUM | Llama check_availability más de una vez |
-| `playbook_violation` | MEDIUM | Flujo incorrecto |
-| `language_switch` | LOW | Cambio de idioma no justificado |
+| Error | Severidad | Condición para marcar |
+|-------|-----------|----------------------|
+| `missed_close` | HIGH | Solo si cliente expresó intención clara ("quiero agendar") Y Elena no ejecutó check_availability |
+| `wrong_info` | MEDIUM | Solo si Elena confirmó hora/fecha DIFERENTE al tool result de create_booking |
+| `playbook_violation` | MEDIUM | Ej: más de 2 pivots después de rechazo claro |
+| `premature_endcall` | HIGH | NO marcar si outcome = no_contesto |
+| `repeated_availability_check` | MEDIUM | NO marcar si cliente pidió un día diferente entre llamadas |
+| `language_switch` | LOW | Solo si cliente habló 3+ frases en inglés y Elena siguió en español |
+| `confusion_created` | MEDIUM | Solo si contradicción ocurrió ANTES de ejecutar check_availability |
+| `premature_greeting` | MEDIUM | NO marcar en outbound — Elena siempre habla primero |
+| `missed_objection` | MEDIUM | Objeción no manejada |
+| `unnecessary_tool_call` | LOW | Tool llamado sin necesidad |
 
 ### Tablas en Supabase
 
 | Tabla | Descripción |
 |-------|-------------|
-| `call_audits` | Registro de cada llamada auditada (outcome, score, errores) |
-| `aria_corrections` | Correcciones propuestas por ARIA pendientes de aprobación |
-| `feedback_log` | Historial de aprobaciones/rechazos de Juan |
+| `call_audits` | Registro de cada llamada auditada (outcome, score, errores, transcript) |
+| `call_intelligence` | Inteligencia de cliente por llamada (zonas, objeciones, buying stage, etc.) — agregada en ARIA v3.0 |
+| `aria_corrections` | Correcciones propuestas por ARIA pendientes de aprobación de Juan |
+| `feedback_log` | Historial de aprobaciones/rechazos de Juan (usado para few-shot dinámico) |
 | `aria_daily_reports` | Reportes diarios generados |
 | `aria_weekly_reports` | Reportes semanales generados |
 
@@ -345,11 +380,11 @@ Todos los campos `elena_*` son custom fields creados en GHL → Settings → Cus
 
 **URL:** `https://subzlfzuzcyqyfrzszjb.supabase.co`
 
-**Schema SQL:** El archivo `aria_schema.sql` en el repositorio GitHub contiene el schema completo de las 5 tablas. Para recrear desde cero: Supabase Dashboard → SQL Editor → pegar contenido de `aria_schema.sql` → Run.
+**Schema SQL:** El archivo `aria_schema.sql` en el repositorio GitHub contiene el schema de las tablas base. La tabla `call_intelligence` fue agregada en ARIA v3.0 — su schema está en `migrations/001_call_intelligence.sql`.
 
 **Para consultar llamadas recientes:**
 ```sql
-SELECT id, call_id, caller_phone, outcome, playbook_score, created_at
+SELECT id, vapi_call_id, phone_number, original_outcome, aria_outcome, playbook_adherence_score, created_at
 FROM call_audits
 ORDER BY created_at DESC
 LIMIT 20;
@@ -363,6 +398,26 @@ GROUP BY error_type
 ORDER BY frecuencia DESC;
 ```
 
+**Para ver inteligencia de cliente reciente:**
+```sql
+SELECT phone_number, buying_stage, interest_level, objections, barriers, created_at
+FROM call_intelligence
+WHERE call_type = 'real_conversation'
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+**Para ver leads calientes (intención alta sin agendar):**
+```sql
+SELECT ci.phone_number, ci.interest_level, ci.buying_stage, ci.objections, ca.original_outcome
+FROM call_intelligence ci
+JOIN call_audits ca ON ci.vapi_call_id = ca.vapi_call_id
+WHERE ci.interest_level >= 4
+  AND ca.original_outcome != 'agendo'
+  AND ci.created_at > NOW() - INTERVAL '7 days'
+ORDER BY ci.interest_level DESC;
+```
+
 ---
 
 ## 9. Procedimientos Operativos (SOPs)
@@ -370,181 +425,196 @@ ORDER BY frecuencia DESC;
 ### SOP-1: Actualizar el prompt de Elena
 
 ```bash
-# 1. Editar el archivo
+# 1. Editar el archivo en el sandbox
 nano /home/ubuntu/elena-vapi-server/system_prompt.txt
 
-# 2. Verificar que no hay errores de sintaxis obvios
-wc -l system_prompt.txt  # debe ser ~154 líneas
+# 2. Verificar líneas
+wc -l system_prompt.txt
 
-# 3. Commit y push (Render auto-deploya)
+# 3. Commit y push (Render auto-deploya en ~3 min)
 cd /home/ubuntu/elena-vapi-server
 git add system_prompt.txt
-git commit -m "fix: descripción del cambio"
+git commit -m "fix: descripción del cambio — Elena VX.X.X"
 git push origin main
 
-# 4. Sincronizar prompt a Vapi
-python3.11 update_vapi_prompt.py
-
-# 5. Verificar que Vapi recibió el prompt
-# Output esperado: "Vapi updated OK" + "Prompt length: ~17000 chars"
+# 4. Sincronizar prompt a Vapi INMEDIATAMENTE
+python3 update_vapi_prompt.py
+# Output esperado: "Vapi updated OK" + "Prompt length: ~19000-20000 chars" + "model.tools: 9"
 ```
+
+> **IMPORTANTE:** `update_vapi_prompt.py` lee desde `/home/ubuntu/elena-vapi-server/system_prompt.txt`. Si editas en otro path, el script no lo verá.
 
 ### SOP-2: Actualizar el servidor (app.py)
 
 ```bash
-# 1. Editar app.py
+# 1. Editar y verificar sintaxis
 nano /home/ubuntu/elena-vapi-server/app.py
+python3 -m py_compile app.py && echo "OK"
 
-# 2. Verificar sintaxis Python
-python3.11 -m py_compile app.py && echo "OK"
-
-# 3. Commit y push (Render auto-deploya en ~3 minutos)
+# 2. Commit y push
 git add app.py
-git commit -m "fix: descripción del cambio"
+git commit -m "fix: descripción del cambio vX.X.XX"
 git push origin main
 
-# 4. Verificar deploy
-sleep 180 && curl -s https://elena-pdem.onrender.com/health | python3.11 -c \
+# 3. Verificar deploy (esperar ~3 min)
+sleep 180 && curl -s https://elena-pdem.onrender.com/health | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print('Version:', d.get('service'))"
 ```
 
-### SOP-3: Verificar estado de todos los sistemas
+### SOP-3: Actualizar ARIA (aria_audit.py)
 
 ```bash
-# Render (servidor)
+# 1. Editar y verificar sintaxis
+nano /home/ubuntu/elena-vapi-server/aria_audit.py
+python3 -m py_compile aria_audit.py && echo "OK"
+
+# 2. Commit y push (ARIA se reinicia con el servidor — polling reanuda ~30s después)
+git add aria_audit.py
+git commit -m "fix(aria): descripción del cambio"
+git push origin main
+```
+
+### SOP-4: Verificar estado de todos los sistemas
+
+```bash
+# Render
 curl -s https://elena-pdem.onrender.com/health
 
 # Vapi (prompt y tools)
-python3.11 update_vapi_prompt.py  # modo dry-run — solo imprime estado
+python3 /home/ubuntu/elena-vapi-server/update_vapi_prompt.py
 
 # GitHub (último commit)
-cd /home/ubuntu/elena-vapi-server && git log --oneline -5
+cd /home/ubuntu/elena-vapi-server && git --no-pager log --oneline -5
 
-# Supabase (últimas 5 llamadas)
-# → Ir a supabase.com/dashboard/project/subzlfzuzcyqyfrzszjb/editor
-# → SELECT * FROM call_audits ORDER BY created_at DESC LIMIT 5;
+# ARIA (via Telegram) → /status
 ```
 
-### SOP-4: Diagnosticar una llamada específica
+### SOP-5: Diagnosticar una llamada específica
 
 ```python
-# Obtener transcript completo de una llamada
-import requests, json
-
+import requests
 VAPI_KEY = "VAPI_KEY_REDACTED_ROTATED_2026_04_24"
 CALL_ID = "PEGAR_CALL_ID_AQUI"
-
-resp = requests.get(
-    f"https://api.vapi.ai/call/{CALL_ID}",
-    headers={"Authorization": f"Bearer {VAPI_KEY}"},
-    timeout=15
-)
-data = resp.json()
-print(data.get("artifact", {}).get("transcript", ""))
+resp = requests.get(f"https://api.vapi.ai/call/{CALL_ID}",
+    headers={"Authorization": f"Bearer {VAPI_KEY}"}, timeout=15)
+print(resp.json().get("artifact", {}).get("transcript", ""))
 ```
 
-### SOP-5: Emergencia — Elena no está respondiendo llamadas
+O más rápido: enviar `/llamada [call_id]` a ARIA por Telegram.
 
-1. Verificar que Render está online: `curl https://elena-pdem.onrender.com/health`
-2. Si Render está caído: ir a `render.com` → elena-pdem → Manual Deploy
+### SOP-6: Emergencia — Elena no está respondiendo llamadas
+
+1. `curl https://elena-pdem.onrender.com/health` — verificar que Render está online
+2. Si Render está caído: `render.com` → elena-pdem → Manual Deploy
 3. Verificar que el phone number Twilio tiene el serverUrl correcto en Vapi:
-   - `app.vapi.ai` → Phone Numbers → `+17869835076` → serverUrl debe ser `https://elena-pdem.onrender.com/api/vapi/server-url`
-4. Verificar que el asistente Vapi tiene el assistant ID correcto asignado al phone number
+   - `app.vapi.ai` → Phone Numbers → `+17869835076` → serverUrl = `https://elena-pdem.onrender.com/api/vapi/server-url`
 
-### SOP-6: Emergencia — Cambio urgente de prompt sin acceso al sandbox
+### SOP-7: Emergencia — Cambio urgente de prompt sin acceso al sandbox
 
-1. Ir a `app.vapi.ai` → Assistants → "Elena - Laser Place Miami"
-2. Click en "Edit"
-3. Modificar el System Prompt directamente en el editor de Vapi
-4. Click "Save"
-5. **IMPORTANTE:** Luego sincronizar el cambio al archivo `system_prompt.txt` en GitHub para mantener consistencia
+1. `app.vapi.ai` → Assistants → "Elena - Laser Place Miami" → Edit
+2. Modificar el System Prompt directamente en el editor de Vapi → Save
+3. **IMPORTANTE:** Luego sincronizar el cambio a `system_prompt.txt` en GitHub para mantener consistencia
 
-### SOP-7: Crear un segundo agente para otro tratamiento
+### SOP-8: Sincronizar el sandbox con el HEAD real de GitHub
 
-**Pre-requisitos antes de empezar:**
-- Elena V2.1.1 tiene 10+ conversaciones reales sin bugs críticos nuevos
-- Tienes definido: tratamiento, objeciones típicas, ¿mismo calendario?, ¿misma doctora?
+```bash
+cd /home/ubuntu/elena-vapi-server
+git fetch origin && git pull origin main
+git --no-pager log --oneline -3
+```
 
-**Pasos:**
+> **NOTA:** El sandbox puede quedar desactualizado si hubo commits desde otro entorno. Siempre hacer `git pull` antes de editar.
+
+### SOP-9: Crear un segundo agente para otro tratamiento
+
+**Pre-requisitos:** Elena V2.2.0 con 10+ conversaciones reales sin bugs críticos. Tratamiento, objeciones típicas y calendario definidos.
+
 1. Duplicar el asistente en Vapi (botón "Duplicate")
-2. Cambiar el nombre y el `firstMessage`
-3. Crear nuevo `system_prompt_[tratamiento].txt` basado en V2.1.1 — modificar Bloques 2 y 3
-4. Cambiar `BOOKING_TITLE` en las variables de entorno de Render (o crear un nuevo servicio)
-5. Crear nuevo calendario en GHL si el tratamiento tiene horarios diferentes
-6. Actualizar `GHL_CALENDAR_ID` en las variables de entorno
+2. Cambiar nombre y `firstMessage`
+3. Crear `system_prompt_[tratamiento].txt` basado en V2.2.0 — modificar Bloques 2 y 3
+4. Cambiar `BOOKING_TITLE` en Render env vars (o crear nuevo servicio)
+5. Crear nuevo calendario en GHL si tiene horarios diferentes
+6. Actualizar `GHL_CALENDAR_ID` en env vars
 7. Duplicar el workflow de GHL y ajustar los SMS
 
 ---
 
 ## 10. Historial de Versiones y Bugs Resueltos
 
-### V2.1.1 (31 marzo 2026) — Versión actual
+### V2.2.0 (4 abril 2026) — Versión actual
 
-**Prompt:** V2.1.1 (154 líneas, arquitectura modular de 4 bloques)
-**Servidor:** v17.48
+**Prompt:** V2.2.0 (179 líneas, 19,567 chars en Vapi) | **Servidor:** v17.57 | **ARIA:** v3.1.1 | **Commit:** `3c6b168`
 
-Bugs resueltos en esta versión (detectados en primera llamada real de V2):
+7 fixes al prompt de Elena + 4 correcciones al clasificador de ARIA. Ver tabla completa en Sección 5.
+
+### V2.1.1 (31 marzo 2026)
+
+**Prompt:** V2.1.1 (154 líneas) | **Servidor:** v17.48 | **Commit:** `7418e08`
 
 | Bug | Descripción | Fix aplicado |
 |-----|-------------|--------------|
-| B1 | Elena hallucina teléfono (+17860000000), servidor lo acepta | `callerPhone` SIEMPRE tiene prioridad en inbound — Elena no puede sobreescribir el número real |
-| B2 | Switch a inglés mid-conversación después de "Sí" | STATE LOCK en Bloque 1: una vez en STATE 4, NO reiniciar saludo ni cambiar idioma |
-| B3 | `check_availability` llamado dos veces por pérdida de estado | Mismo STATE LOCK — el LLM no puede retroceder a STATE 1/2 después de recibir slots |
-| B4 | SRA ofrecido para lip augmentation (tratamiento incorrecto) | REGLA DE CONTEXTO SRA: si cliente menciona otro tratamiento, primero preguntar si también quiere Botox |
+| B1 | Elena hallucina teléfono (+17860000000), servidor lo acepta | `callerPhone` SIEMPRE tiene prioridad en inbound |
+| B2 | Switch a inglés mid-conversación después de "Sí" | STATE LOCK en Bloque 1 |
+| B3 | `check_availability` llamado dos veces por pérdida de estado | STATE LOCK — el LLM no puede retroceder a STATE 1/2 |
+| B4 | SRA ofrecido para lip augmentation (tratamiento incorrecto) | REGLA DE CONTEXTO SRA |
 
-### V2.1.0 (30 marzo 2026) — Primera versión del prompt V2
+### Fixes del servidor post-31/03 (v17.49 → v17.57)
+
+| Versión | Commit | Cambio |
+|---------|--------|--------|
+| v17.49 | `644af95` | ARIA coverage: non-daemon thread + Telegram independiente de Supabase |
+| v17.50 | `473fca2` | ARIA cobertura 100%, dedup in-memory lock, no_interesado detection |
+| v17.51 | `92fcdd3` | Gunicorn 4 workers → 1 worker + 8 threads (fix concurrencia) |
+| v17.52 | `dac1413` | ARIA polling daemon=False + sleep inicial 30s |
+| v17.53 | `00bba42` | ARIA race condition: lee GHL post-Claude para eliminar discrepancia |
+| v17.57 | `e7d0816` | FIX H1/H2/H3: filtrar llamadas sin datos/transcript, forzar status=ended |
+
+### ARIA — Evolución de versiones
+
+| Versión | Commit | Cambio principal |
+|---------|--------|-----------------|
+| v3.0.0 | `4004a3a` | 13 comandos nuevos + inteligencia de cliente (call_intelligence) |
+| v3.1.0 | `0ce8dd2` | Fix 13 bugs post-deploy |
+| v3.1.1 | `07cb7d5` | Fix /tendencia + /backfill + mejoras /intel y /leads |
+| v3.1.1+ | `830c1ac` | Fix Supabase 23514: audit_status + sanitizar outcomes inválidos |
+| v3.1.1+ | `3c6b168` | 4 correcciones al clasificador de errores (falsos positivos) |
+
+### V2.1.0 (30 marzo 2026)
 
 Reescritura completa del prompt de 596 líneas (V1) a 152 líneas (V2) con arquitectura modular. Pasó 86/86 items del inventario y 11/11 simulaciones antes del deploy.
-
-### V1 → V2 — Por qué se reescribió
-
-El prompt V1 acumuló 20+ capas de "FIX" durante semanas de producción, generando:
-- Reglas contradictorias sobre `endCall` (causaba cuelgues prematuros)
-- Instrucciones de `check_availability` en 4 lugares distintos
-- Carga cognitiva innecesaria (tabla de cálculo de horas, campos de GHL que el LLM no usa)
-- 20 `premature_endcall` y 19 `missed_close` en 87 llamadas auditadas
-
-### Versiones del servidor (historial relevante)
-
-| Versión | Fecha | Cambio principal |
-|---------|-------|-----------------|
-| v17.48 | 31/03/2026 | Fix B1 callerPhone inbound override; bump de versión |
-| v17.47 | 30/03/2026 | Regla absoluta "quiero agendar" = check_availability |
-| v17.46 | 28/03/2026 | 9 tools como inline model.tools (fix crítico de Vapi) |
-| v17.44 | 28/03/2026 | Fix shallow_call para assistant-ended-call <45s |
-| v17.42 | 28/03/2026 | Fix voicemail phrases, BUG3-v3, shallow_call |
-| v17.41 | 28/03/2026 | check_availability 2 slots/día, reschedule = agendo |
-| v17.40 | 28/03/2026 | 8 mejoras conversacionales al prompt |
-| v17.35 | 28/03/2026 | 10 fixes de auditoría (B1-B10) |
-| v17.39 | 28/03/2026 | Fix voicemail_by_elena, prohibición de create_booking prematuro |
 
 ---
 
 ## 11. Estado Actual y Próximos Pasos
 
-### Estado al 31 marzo 2026
+### Estado al 4 abril 2026
 
 | Sistema | Estado | Versión/Commit |
 |---------|--------|----------------|
-| Vapi | ✅ Activo | Prompt V2.1.1 (17,138 chars) |
-| Render | ✅ Healthy | `Elena AI Tool Server v17.48` |
-| GitHub | ✅ Synced | commit `7418e08` en `main` |
+| Vapi | ✅ Activo | Prompt V2.2.0 (19,567 chars), 9 tools, analysisPlan preservado |
+| Render | ✅ Healthy | `Elena AI Tool Server v17.57` |
+| GitHub | ✅ Synced | commit `3c6b168` en `main` |
 | GHL Workflow | ✅ Publicado | SMS sequences activos |
-| Supabase | ✅ Activo | ~88 registros en call_audits |
-| ARIA | ✅ Live | Polling cada 3 min, Telegram activo |
+| Supabase | ✅ Activo | call_audits + call_intelligence activas |
+| ARIA | ✅ Live | v3.1.1, polling cada 3 min, 18 comandos Telegram, few-shot dinámico |
 
 ### Próximos pasos priorizados
 
-**Prioridad 1 (inmediata):** Monitorear las próximas 10-15 llamadas reales para confirmar que los 4 fixes de V2.1.1 funcionan en producción. Revisar en Supabase que los outcomes se clasifiquen correctamente y que los bookings en GHL tengan nombre/email/teléfono reales.
+**Prioridad 1 (inmediata):** Monitorear las próximas 20-30 llamadas con V2.2.0.
+- `/score` debe subir de 29-42 a 60+ (falsos positivos eliminados)
+- `/errores 7d` debe mostrar reducción drástica de `premature_greeting` y `premature_endcall`
+- `confusion_created` nuevos = señal de que Fix 3 no funcionó
 
-**Prioridad 2 (1-2 semanas):** Una vez que Elena tenga 10+ conversaciones reales sin bugs críticos nuevos, evaluar si lanzar un segundo agente para otro tratamiento. El runbook está en SOP-7.
+**Prioridad 2 (1-2 semanas):** Implementar Loop 2 — ARIA escribe inteligencia de cliente en GHL. Cuando Elena llama de vuelta al mismo número, `get_contact` devuelve `interest_level`, `buying_stage` y `objections` previos → Elena adapta su apertura. Todo el código base ya existe. Solo falta el puente.
 
-**Prioridad 3 (futuro):** Implementar few-shot dinámico en ARIA — inyectar los últimos 10 feedbacks aprobados/rechazados de Juan en el prompt de Claude antes de cada auditoría, para que ARIA calibre con el criterio real de Juan.
+**Prioridad 3 (2-4 semanas):** Con 20+ conversaciones reales sin bugs críticos nuevos, evaluar lanzar segundo agente para otro tratamiento. El runbook está en SOP-9.
 
 ### Riesgo residual conocido
 
 El STATE LOCK previene el reinicio de estado, pero no garantiza que el LLM no tenga alucinaciones de contexto en conversaciones muy largas (>15 turnos). Si aparece ese patrón, el siguiente paso sería reducir el contexto de herramientas o agregar un resumen de estado explícito en el prompt.
 
+El clasificador de ARIA ahora tiene definiciones más precisas para los 4 errores con mayor tasa de falsos positivos. Si aparecen nuevos patrones de falsos positivos, ajustar las cláusulas IMPORTANTE en `ARIA_SYSTEM_PROMPT` en `aria_audit.py`.
+
 ---
 
-*Documento generado el 31 marzo 2026. Para actualizar este documento, editar `/home/ubuntu/ELENA_ARIA_HANDOFF_MAESTRO.md` y hacer commit al repositorio.*
+*Documento actualizado el 4 abril 2026. Para actualizar: editar `/home/ubuntu/elena-vapi-server/HANDOFF_MAESTRO.md` y hacer commit al repositorio.*
