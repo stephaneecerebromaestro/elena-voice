@@ -1,3 +1,7 @@
+> ⚠️ **ARCHIVO HISTÓRICO** — Este documento NO refleja el estado actual del sistema. El documento vigente es `CLAUDE.md`. Se conserva como referencia del camino recorrido.
+
+---
+
 # Elena AI + ARIA — Contexto del Sistema (Documento Vivo)
 
 > **Última actualización:** v17.46 + ARIA v1.1.0 — 29 marzo 2026  

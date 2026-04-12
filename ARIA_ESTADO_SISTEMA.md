@@ -1,3 +1,7 @@
+> ⚠️ **ARCHIVO HISTÓRICO** — Este documento NO refleja el estado actual del sistema. El documento vigente es `CLAUDE.md`. Se conserva como referencia del camino recorrido.
+
+---
+
 # ARIA + Elena — Estado del Sistema y Plan Estratégico
 **Última actualización:** 30 marzo 2026
 

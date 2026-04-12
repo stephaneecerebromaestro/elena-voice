@@ -1,3 +1,7 @@
+> ⚠️ **ARCHIVO HISTÓRICO** — Este documento NO refleja el estado actual del sistema. El documento vigente es `CLAUDE.md`. Se conserva como referencia del camino recorrido.
+
+---
+
 # Audit Final — Sistema Elena v17.27
 **Fecha:** 26 de marzo de 2026  
 **Alcance:** system_prompt.txt, app.py, Dockerfile, patch_vapi_full_restore.py, configuración Vapi en vivo

@@ -1,3 +1,7 @@
+> ⚠️ **ARCHIVO HISTÓRICO** — Este documento NO refleja el estado actual del sistema. El documento vigente es `CLAUDE.md`. Se conserva como referencia del camino recorrido.
+
+---
+
 # ELENA + ARIA — Documento de Handoff Maestro
 **Versión:** 2.2.0 | **Fecha:** 4 abril 2026 | **Propietario:** Juan Garcia — Laser Place Miami
 

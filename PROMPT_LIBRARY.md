@@ -1,3 +1,7 @@
+> ⚠️ **ARCHIVO HISTÓRICO** — Este documento NO refleja el estado actual del sistema. El documento vigente es `CLAUDE.md`. Se conserva como referencia del camino recorrido.
+
+---
+
 # Biblioteca de Prompts — Elena + ARIA
 **Proyecto:** Voice Agent Builder — Laser Place Miami  
 **Versión:** 1.0 | **Fecha:** 31 marzo 2026
