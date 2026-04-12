@@ -83,7 +83,7 @@ Also exposes:
 - /health: Health check endpoint
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g as flask_g
 import requests as http_requests
 import json
 import os
@@ -96,16 +96,41 @@ import pytz
 app = Flask(__name__)
 
 # ─── Configuration ────────────────────────────────────────────────────────────
+from config import get_assistant_config, DEFAULT_ASSISTANT_ID, ASSISTANTS
+
 GHL_PIT = os.environ.get("GHL_PIT", "")
-CALENDAR_ID = os.environ.get("GHL_CALENDAR_ID", "hYHvVwjKPykvcPkrsQWT")
 LOCATION_ID = os.environ.get("GHL_LOCATION_ID", "hzRj7DV9erP8tnPiTv7D")
 VAPI_KEY = os.environ.get("VAPI_API_KEY", "VAPI_KEY_REDACTED_ROTATED_2026_04_24")
-VAPI_ASSISTANT_ID = os.environ.get("VAPI_ASSISTANT_ID", "1631c7cf-2914-45f9-bf82-6635cdf00aba")
+
+# LEGACY GLOBALS — kept for backwards compatibility, used as defaults
+# New code should use get_active_config() instead
+VAPI_ASSISTANT_ID = os.environ.get("VAPI_ASSISTANT_ID", DEFAULT_ASSISTANT_ID)
+CALENDAR_ID = os.environ.get("GHL_CALENDAR_ID", "hYHvVwjKPykvcPkrsQWT")
+BOOKING_TITLE = os.environ.get("BOOKING_TITLE", "Evaluación Botox - Laser Place Miami")
 
 GHL_V2_BASE = "https://services.leadconnectorhq.com"
 TZ = pytz.timezone("America/New_York")
-# B6 FIX: Configurable booking title — override via env var for non-Botox agents
-BOOKING_TITLE = os.environ.get("BOOKING_TITLE", "Evaluación Botox - Laser Place Miami")
+
+# ─── Multi-assistant config resolution ────────────────────────────────────────
+# Thread-local storage for the active assistant config during a request
+_active_config = threading.local()
+
+def set_active_config(assistant_id):
+    """Set the active assistant config for this request/thread."""
+    _active_config.config = get_assistant_config(assistant_id)
+    return _active_config.config
+
+def get_active_config():
+    """Get the active assistant config. Falls back to default if not set."""
+    return getattr(_active_config, 'config', None) or get_assistant_config(None)
+
+def get_active_calendar_id():
+    """Get calendar_id for the current assistant."""
+    return get_active_config()["calendar_id"]
+
+def get_active_booking_title():
+    """Get booking_title for the current assistant."""
+    return get_active_config()["booking_title"]
 
 DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -282,8 +307,9 @@ def handle_check_availability(args):
     start_ms = int((now + timedelta(hours=2)).timestamp() * 1000)
     end_ms = int((now + timedelta(days=30)).timestamp() * 1000)
 
+    active_calendar = get_active_calendar_id()
     result = ghl_v2_get(
-        f"/calendars/{CALENDAR_ID}/free-slots",
+        f"/calendars/{active_calendar}/free-slots",
         params={
             "startDate": start_ms,
             "endDate": end_ms,
@@ -543,7 +569,7 @@ def handle_create_booking(args):
     """
     contact_id = args.get("contactId", "")
     start_time = args.get("startTime", "")
-    title = args.get("title", BOOKING_TITLE)  # B6 FIX: uses configurable BOOKING_TITLE env var
+    title = args.get("title", get_active_booking_title())  # Multi-assistant: uses active config
 
     if not contact_id or not start_time:
         return {"success": False, "message": "Se necesita contactId y startTime para agendar."}
@@ -587,7 +613,7 @@ def handle_create_booking(args):
         start_time_utc = start_time
         end_time_utc = start_time
     data = {
-        "calendarId": CALENDAR_ID,
+        "calendarId": get_active_calendar_id(),
         "locationId": LOCATION_ID,
         "contactId": contact_id,
         "startTime": start_time_utc,
@@ -636,7 +662,7 @@ def handle_reschedule_appointment(args):
     data = {
         "startTime": new_start_utc,
         "endTime": end_time_utc,
-        "calendarId": CALENDAR_ID,
+        "calendarId": get_active_calendar_id(),
         "selectedTimezone": "America/New_York",
         "selectedSlot": new_start_utc
     }
@@ -688,7 +714,7 @@ def handle_get_appointment_by_contact(args):
     now = datetime.now(TZ)
     upcoming = []
     for a in appointments:
-        if a.get("calendarId") != CALENDAR_ID:
+        if a.get("calendarId") != get_active_calendar_id():
             continue
         # Skip cancelled and noshow appointments
         if a.get("appointmentStatus") in ("cancelled", "noshow"):
@@ -946,6 +972,10 @@ def _process_end_of_call(message):
     """
     try:
         call = message.get("call", {})
+        # MULTI-ASSISTANT: Resolve config for this call's assistant
+        _eoc_assistant_id = call.get("assistantId", "")
+        set_active_config(_eoc_assistant_id)
+
         artifact = message.get("artifact", {})
         messages_list = artifact.get("messages", call.get("messages", []))
         ended_reason = call.get("endedReason", message.get("endedReason", ""))
@@ -1605,7 +1635,8 @@ def vapi_server_url():
             "status": "healthy",
             "service": f"Elena AI - Vapi Tool Server {SERVER_VERSION}",
             "tools": list(TOOL_HANDLERS.keys()),
-            "calendar_id": CALENDAR_ID,
+            "calendar_id": CALENDAR_ID,  # Default calendar (Botox)
+            "assistants_configured": len(ASSISTANTS),
             "using_pit": bool(GHL_PIT)
         }), 200, cors
 
@@ -1617,6 +1648,10 @@ def vapi_server_url():
         # FIX H: Extract caller phone from call.customer.number
         call_data = message.get("call", {})
         caller_phone = call_data.get("customer", {}).get("number", "")
+
+        # MULTI-ASSISTANT: Resolve config from assistantId
+        assistant_id = call_data.get("assistantId", "")
+        active_cfg = set_active_config(assistant_id)
 
         if message_type == "tool-calls":
             tool_calls = message.get("toolCallList", [])
