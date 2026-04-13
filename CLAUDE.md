@@ -97,7 +97,7 @@ GHL Workflow (trigger: nuevo lead, tag, etc.)
 | Assistant | Tratamiento | Vapi ID | Calendar GHL | Pipeline GHL | Estado |
 |-----------|------------|---------|-------------|-------------|--------|
 | Elena - Laser Place Miami | Botox | 1631c7cf-2914-45f9-bf82-6635cdf00aba | hYHvVwjKPykvcPkrsQWT | jiLGCWy0CEsa0iAmmMWT | ACTIVO |
-| (pendiente) | LHR | — | gQclGhEhZ2K1NkLal7pt | fyieKv1fpjRGJXfRZKT2 | POR CREAR |
+| Elena Voice - LHR | Laser Hair Removal | 3d5b77b5-f36c-4b95-88bc-4d6484277380 | gQclGhEhZ2K1NkLal7pt | fyieKv1fpjRGJXfRZKT2 | CREADO 2026-04-13, pendiente test real |
 | (pendiente) | Fillers | — | (pedir a Juan) | (pedir a Juan) | POR CREAR |
 | (pendiente) | Bioestimuladores | — | (pedir a Juan) | (pedir a Juan) | POR CREAR |
 | (pendiente) | Acne | — | (pedir a Juan) | (pedir a Juan) | POR CREAR |

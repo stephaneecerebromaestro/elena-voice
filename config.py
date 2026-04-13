@@ -26,14 +26,14 @@ ASSISTANTS = {
         "booking_title": "Evaluación Botox - Laser Place Miami",
     },
 
-    # ─── LHR (pendiente — calendar ya existe) ───
-    # "VAPI_ASSISTANT_ID_AQUI": {
-    #     "name": "Elena Voice - Laser Hair Removal",
-    #     "treatment": "lhr",
-    #     "calendar_id": "gQclGhEhZ2K1NkLal7pt",
-    #     "pipeline_id": "fyieKv1fpjRGJXfRZKT2",
-    #     "booking_title": "Evaluación Laser Hair Removal - Laser Place Miami",
-    # },
+    # ─── LHR (assistant creado 2026-04-13) ───
+    "3d5b77b5-f36c-4b95-88bc-4d6484277380": {
+        "name": "Elena Voice - Laser Hair Removal",
+        "treatment": "lhr",
+        "calendar_id": "gQclGhEhZ2K1NkLal7pt",
+        "pipeline_id": "fyieKv1fpjRGJXfRZKT2",
+        "booking_title": "Evaluación Laser Hair Removal - Laser Place Miami",
+    },
 
     # ─── Nuevos tratamientos van aqui ───
     # "VAPI_ID": {
