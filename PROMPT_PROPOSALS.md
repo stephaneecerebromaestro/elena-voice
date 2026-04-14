@@ -218,24 +218,19 @@ ARIA Polling: auditando 2 assistant(s):
 
 Efecto: la próxima corrida del cron semanal (lunes 20) tendrá cobertura ARIA > 0% en LHR → top razones no_agendo confiables para ambos tratamientos.
 
-### O-002 — Tasa de no-contestación 63-95% (Botox)
+### O-002 — Tasa de no-contestación 63-95% (Botox) ✅ CUBIERTO
 
 **Problema:** 63% histórico; 94.9% esta semana. Conversión sana cuando hay conversación real (16%), pero el funnel se rompe antes de conectar.
 
-**Fix probable (NO de prompt):**
-- SMS previo a la llamada en el workflow GHL
-- Filtrar leads por recency (<48h)
-- Máximo 2 intentos por número
+**Resolución (Juan, 2026-04-14):** ya está cubierto. Cuando un lead entra al workflow GHL recibe un mensaje de bienvenida por WhatsApp desde el mismo número Twilio desde el cual Elena Voice llamará después. El paciente ve el número, lo reconoce, contesta.
 
-**Owner:** Juan (workflows GHL). Stephanee lo documentó en `AUDIT_898_CALLS.md` como "MEDIO PLAZO".
+**Próxima verificación:** medir el contact_rate en las corridas semanales del cron después del lunes 20. Si sube de ~5% a >20%, el SMS previo está funcionando.
 
-### O-003 — Slots de 5 minutos en calendario Botox
+### O-003 — Slots de 5 minutos en calendario Botox ✅ ASUMIDO POR JUAN
 
 **Problema:** Auditoría 898 detectó "'las doce o las doce y cinco' suena raro. Debe ser 30 min" (línea 72).
 
-**Fix probable (NO de prompt):** cambio de configuración del calendario GHL de Botox a intervalos de 30 min.
-
-**Owner:** Juan (GHL).
+**Resolución (Juan, 2026-04-14):** Juan lo cambia en GHL cuando tenga tiempo. Fuera del perímetro de Elena Voice.
 
 ---
 
@@ -249,6 +244,8 @@ Efecto: la próxima corrida del cron semanal (lunes 20) tendrá cobertura ARIA >
 | 2026-04-14 | P-001 aplicado: STATE 5 de Botox simplificado. SMS/email de GHL cubren la dirección. Prompt body 21353→21281 chars. SHA `59b2ca1ebf056147` |
 | 2026-04-14 | P-004 abierto: STATE 5 de LHR tiene texto corrupto ("oral Gables", duplicación) — espera aprobación de Juan + verificación del workflow GHL de LHR |
 | 2026-04-14 | P-004 aplicado: texto corrupto de LHR normalizado a la misma despedida limpia de Botox. SMS LHR verificado con 4 bookings. SHA `15875198debb0f9d`. Mirror en `system_prompt_lhr.txt`. |
+| 2026-04-14 | O-002 cerrado (Juan): workflow GHL ya manda WhatsApp de bienvenida desde el mismo número Twilio antes de la llamada. Verificar contact_rate en corridas post-lunes 20. |
+| 2026-04-14 | O-003 asumido por Juan: cambia slots de 5→30 min en GHL cuando tenga tiempo. |
 
 ---
 
