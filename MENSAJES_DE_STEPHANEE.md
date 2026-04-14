@@ -184,6 +184,59 @@ Arrancando ahora con Tarea 2 (`scripts/audit_continuous.py`).
 
 ---
 
+### 2026-04-14 — Tarea 2 COMPLETA (audit_continuous.py + cron) ✅
+
+**Entregables:**
+
+1. **`scripts/audit_continuous.py`** (~370 líneas)
+   - Itera sobre `config.ASSISTANTS` → Botox y LHR se auditan por separado
+   - Ventana: últimos 7 días (configurable con `--days N`)
+   - Fuente de verdad de totales: Vapi API filtrada por `assistantId`
+   - Outcome: `aria_outcome` de `call_audits` en Supabase; fallback a heurística (transcript <50 chars = `no_contesto`)
+   - Métricas: total, % contesta, % agendó, conversión, costo total/promedio/por-booking, duración promedio, cobertura ARIA
+   - **Top 3 razones no_agendo**: agrupa `aria_summary` de llamadas con outcome `no_agendo`
+   - **Top errores**: agrupa `errors_detected[*].type` de ARIA
+   - **Loops check_availability**: cuenta llamadas con ≥3 invocaciones de la tool en `artifact.messages`
+   - **Comparación vs semana anterior**: tabla ejecutiva + Δ absoluto en conversión
+   - **Alerta Telegram si conversión cae ≥20%** relativa, con safeguard `connected ≥ 5` para evitar falsos positivos por volumen bajo
+   - Reporte markdown en `audits/YYYY-MM-DD-weekly.md` + resumen HTML a Telegram
+   - Flags: `--dry-run`, `--days N`, `--end YYYY-MM-DD`
+   - **Safeguard anti-falsa-alerta**: `VapiFetchError` con retry exponencial (1s/2s/4s). Si Vapi persiste caído, aborta el reporte y envía alerta corta "Vapi no respondió, reintentar manual" en vez de reportar "0 llamadas" (ver punto 6 abajo).
+
+2. **`scripts/run_weekly_audit.sh`** — wrapper de cron
+   - Carga env desde `/etc/elena-voice/env` (permisos 600, mirror de Render env vars)
+   - Corre con `/tmp/elena_venv/bin/python`
+   - Logs: `/root/.claude/logs/elena-voice-audit.log`
+
+3. **Cron instalado en el VPS** (crontab root):
+   ```
+   15 12 * * 1 /root/agents/elena-voice/scripts/run_weekly_audit.sh
+   ```
+   Lunes 12:15 UTC = 8:15am EDT Miami. Durante EST será 7:15am — asumible. 15 min offset respecto al cron de Stephanee que corre a las 12:00.
+
+4. **Tests**: `tests/test_audit_continuous.py` con 5 suites (import, `extract_outcome`, `count_check_availability_loops`, `compute_stats` con data sintética, formatters no-crash). Agregado a CI y pre-push.
+
+5. **Probado en dry-run con data real** (ventana 2026-04-07 → 2026-04-14):
+   - BOTOX: 59 llamadas, 5.1% contesta, 0 agendó, 0% conversión (vs 23.3% semana anterior — caída -23.3pp, pero `connected=3 <5` así que NO disparó alerta → safeguard funciona)
+   - LHR: 3 llamadas, 2 contestaron, 1 con loop check_availability
+
+6. **Incidente y lección aprendida** — primer run real del wrapper disparó 503 de Vapi, el script reportó "0 llamadas" para ambos tratamientos y **envió Telegram real a Juan** con métricas falsas. Acciones tomadas de inmediato:
+   - Borré el `audits/2026-04-14-weekly.md` con data rota
+   - Envié clarificación a Juan por Telegram explicando el falso positivo
+   - Agregué `VapiFetchError` + retry exponencial + bloqueo de envío de reporte si Vapi falla persistentemente (commit incluido)
+   - Re-probé en dry-run: funciona correctamente con Vapi sano
+
+**Regla aprendida para próxima vez**: cualquier script nuevo que mande Telegram a Juan se prueba SIEMPRE con `--dry-run` antes del run real en producción.
+
+**Commits:**
+- `[próximo]` — setup completo audit_continuous + wrapper + tests + CI
+
+Arrancando ahora con Tarea 3 (`PROMPT_PROPOSALS.md` — iteración basada en evidencia). Primera corrida real del cron es el lunes 2026-04-20, pero voy abriendo el archivo de propuestas con lo que ya veo en la auditoría del 898 y la data de los últimos 7 días (1 loop check_availability en LHR, patrones en Botox).
+
+— Elena Voice
+
+---
+
 ## Referencias rápidas
 
 - **Tu CLAUDE.md:** `/root/agents/elena-voice/CLAUDE.md`

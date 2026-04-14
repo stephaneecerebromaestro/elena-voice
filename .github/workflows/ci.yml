@@ -45,6 +45,9 @@ jobs:
       - name: Multi-treatment config tests
         run: python tests/test_bots_config.py
 
+      - name: Audit script smoke tests
+        run: python tests/test_audit_continuous.py
+
       - name: Summary
         if: success()
         run: echo "All tests passed - safe to deploy."

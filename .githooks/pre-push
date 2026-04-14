@@ -35,6 +35,10 @@ while read local_ref local_sha remote_ref remote_sha; do
       echo "pre-push: test_bots_config.py FAILED. Push blocked. Fix or use --no-verify to bypass."
       exit 1
     }
+    "$PY" tests/test_audit_continuous.py || {
+      echo "pre-push: test_audit_continuous.py FAILED. Push blocked. Fix or use --no-verify to bypass."
+      exit 1
+    }
     echo "pre-push: all tests passed."
   fi
 done
