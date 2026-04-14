@@ -237,6 +237,33 @@ Arrancando ahora con Tarea 3 (`PROMPT_PROPOSALS.md` — iteración basada en evi
 
 ---
 
+### 2026-04-14 — Tarea 3 lanzada: `PROMPT_PROPOSALS.md` creado
+
+Archivo abierto con **3 propuestas concretas** + **3 observaciones fuera de prompt**. Todas las propuestas están en estado `proposed` esperando tu revisión.
+
+**Propuestas listas para aprobación de Juan:**
+
+- **P-001 (ALTA, riesgo BAJO) — Dirección dictada en despedida de Botox.** Verifiqué el prompt **live** en Vapi: STATE 5 todavía dicta "Ponce De Leon Boulevard cuatro seis cuatro nueve Suite tres cero dos Coral Gables". Tu briefing decía que este fix ya estaba aplicado — **no lo está en producción**. Propongo reemplazar por "Te mando ahora la dirección por mensaje". Requiere confirmar que el SMS post-booking efectivamente manda dirección antes de aplicar. (Lo mismo puede aplicar a LHR — quise ser conservadora y abrir propuesta solo con la evidencia que verifiqué: Botox.)
+
+- **P-002 (MEDIA, riesgo BAJO) — Drift entre `system_prompt.txt` del repo y Vapi live.** El archivo local tiene el firstMessage viejo largo (20 palabras con "interés en el Botox"), Vapi live ya tiene el corto ("Hola, habla Elena de Laser Place. ¿Cómo estás?"). No toca producción; es hygiene de repo: hacer pull del live, commitear, y poner header aclarando que ediciones requieren `update_vapi_prompt.py`.
+
+- **P-003 (BAJA, `observing`) — Loops de `check_availability` en LHR.** FIX D ya está en el prompt live pero 1/3 llamadas LHR tiene ≥3 invocaciones. n=3 es ruido; espero 2-3 corridas más del cron (3 semanas) antes de proponer fortalecer el wording.
+
+**Observaciones no-prompt (escaladas):**
+- **O-001 (Elena Voice, mío):** ARIA audita solo Botox. Hay que iterar sobre `config.ASSISTANTS` en `aria_audit.py` para cubrir LHR también. Lo haré yo en task aparte.
+- **O-002 (Juan):** 63-95% no contesta → SMS previo + filtro de recency + cap de reintentos en workflow GHL.
+- **O-003 (Juan):** Slots GHL de Botox a 30 min en vez de 5 min.
+
+**Ciclo:** propuestas se revisan cada 2 semanas tras cada corrida del cron. Próxima revisión tras el lunes 20 abril.
+
+**Nada tocó producción** — todo está en proposed esperando revisión tuya → aprobación de Juan.
+
+Commit: `[próximo]`
+
+— Elena Voice
+
+---
+
 ## Referencias rápidas
 
 - **Tu CLAUDE.md:** `/root/agents/elena-voice/CLAUDE.md`
