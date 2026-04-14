@@ -23,9 +23,10 @@
 
 | ID | Título | Estado | Bot | Fecha |
 |----|--------|--------|-----|-------|
-| P-001 | Dirección completa dictada en despedida (Botox) | `proposed` | Botox | 2026-04-14 |
-| P-002 | Desync entre `system_prompt.txt` del repo y prompt live en Vapi | `proposed` | Botox | 2026-04-14 |
+| P-001 | Dirección completa dictada en despedida (Botox) | `applied` 2026-04-14 | Botox | 2026-04-14 |
+| P-002 | Desync entre `system_prompt.txt` del repo y prompt live en Vapi | `applied` 2026-04-14 | Botox | 2026-04-14 |
 | P-003 | Loops de `check_availability` persisten pese a FIX D | `observing` | LHR | 2026-04-14 |
+| P-004 | STATE 5 de LHR tiene texto corrupto ("oral Gables", duplicado "por mensaje") | `proposed` | LHR | 2026-04-14 |
 
 **Estados:** `proposed` → `approved` → `applied` → `verified` · o `rejected` · o `observing` (pre-propuesta, recolectando más data)
 
@@ -33,7 +34,7 @@
 
 ## P-001 — Dirección completa dictada en despedida (Botox)
 
-**Estado:** `proposed` · **Bot:** Botox · **Prioridad:** ALTA · **Riesgo:** BAJO
+**Estado:** `applied` 2026-04-14 (Juan dio OK general, SMS verificado) · **Bot:** Botox · **Prioridad:** ALTA · **Riesgo:** BAJO
 
 ### Problema observado
 En STATE 5 del prompt live de Botox, Elena cierra la llamada dictando por voz la dirección completa:
@@ -79,19 +80,24 @@ Te mando ahora la dirección y los detalles por mensaje. ¡Que tengas un excelen
 - Si el SMS no envía la dirección, el paciente queda sin la info → regresión. Mitigación: verificar con Juan o inspeccionar el workflow GHL antes de aplicar.
 
 ### Checklist antes de aplicar
-- [ ] Juan aprueba
-- [ ] Confirmar que SMS post-booking de Botox incluye la dirección completa
-- [ ] Aplicar vía `update_vapi_prompt.py` o API directo
-- [ ] Hacer 1 llamada de test (número interno, NO paciente real)
-- [ ] Verificar transcript: despedida corta, sin dictar dirección
-- [ ] Confirmar recibo del SMS con dirección
-- [ ] Marcar `applied` con commit hash y fecha
+- [x] Juan aprueba (2026-04-14, OK general a lista de opciones)
+- [x] Confirmar que SMS post-booking de Botox incluye la dirección completa — **verificado con un booking real**: SMS del 14-abr 17:47 incluye "📍 Acá te dejo la dirección: 4649 Ponce De Leon, Suite 302, Coral Gables, FL 33146" + email con Google Maps link
+- [x] Aplicar vía API directo (Vapi PATCH assistant) — HTTP 200, SHA cambió de `381aea7c0b6cff12` → `59b2ca1ebf056147`
+- [ ] Hacer 1 llamada de test (número interno, NO paciente real) — pendiente (Juan puede hacerlo cuando quiera)
+- [ ] Verificar transcript de esa llamada: despedida corta, sin dictar dirección
+- [ ] Confirmar recibo del SMS con dirección (debe seguir llegando, lo manda GHL no Elena)
+
+### Resultado del cambio
+- Prompt body: 21353 → 21281 chars (-72)
+- STATE 5 ahora: `"Excelente [Nombre], te esperamos el [día] a las [hora exacta del booking]. Te mando ahora la dirección y los detalles por mensaje. ¡Que tengas un excelente día!"`
 
 ---
 
 ## P-002 — Desync entre `system_prompt.txt` del repo y prompt live en Vapi (Botox)
 
-**Estado:** `proposed` · **Bot:** Botox · **Prioridad:** MEDIA · **Riesgo:** BAJO (no toca producción)
+**Estado:** `applied` 2026-04-14 · **Bot:** Botox · **Prioridad:** MEDIA · **Riesgo:** BAJO (no toca producción)
+
+**Resolución:** Pull del prompt live post-P-001, sobrescribí `system_prompt.txt` con header documentando fuente + SHA + fecha. Commit junto con P-001.
 
 ### Problema observado
 
@@ -157,17 +163,60 @@ Sin embargo, en la primera corrida de `audit_continuous.py` (ventana 2026-04-07 
 
 ---
 
+## P-004 — STATE 5 de LHR tiene texto corrupto
+
+**Estado:** `proposed` · **Bot:** LHR · **Prioridad:** ALTA · **Riesgo:** BAJO (fix de bug, no cambio de política)
+
+### Problema observado
+Al verificar el prompt live de LHR post-P-001, encontré que el STATE 5 de LHR tiene **texto malformado** (aparente edición previa incompleta):
+
+```
+"Excelente [Nombre], te esperamos el [día] a las [hora exacta del booking].
+Te mando la dirección y confirmación por mensaje.oral Gables.
+Te enviamos la confirmación por mensaje. ¡Que tengas un excelente día!"
+```
+
+Problemas:
+1. `"por mensaje.oral Gables"` — sobra residual de "Coral Gables", sin separación. TTS lo pronunciará raro ("oral Gables")
+2. `"Te mando la dirección..."` y `"Te enviamos la confirmación..."` — dos frases que dicen casi lo mismo, duplicación innecesaria
+3. Ruptura de la oración (faltan marcadores coherentes)
+
+### Fix propuesto
+Reemplazar por la misma despedida limpia aplicada a Botox en P-001:
+```
+"Excelente [Nombre], te esperamos el [día] a las [hora exacta del booking].
+Te mando ahora la dirección y los detalles por mensaje. ¡Que tengas un excelente día!"
+```
+
+### Pre-requisito a verificar antes de aplicar
+- Confirmar que el workflow GHL del calendario LHR (`gQclGhEhZ2K1NkLal7pt`) envía SMS post-booking con dirección, igual que Botox. Si no hay bookings LHR aún (hasta ahora hay 0), no podemos verificar el SMS con data real → pedir a Juan que confirme el workflow GHL de LHR.
+
+### Checklist antes de aplicar
+- [ ] Juan aprueba
+- [ ] Confirmar workflow GHL de LHR tiene SMS post-booking con dirección
+- [ ] Aplicar vía PATCH Vapi
+- [ ] Guardar prompt live de LHR en `system_prompt_lhr.txt` (mirror) al repo
+- [ ] Test con llamada (número interno)
+
+---
+
 ## No son fix de prompt — pero observados y escalados
 
 Estos patrones aparecen en la data pero **el fix no está en el prompt** — requieren cambios de infra o workflows GHL que dependen de Juan o de Stephanee. Los listo aquí para trazabilidad.
 
-### O-001 — Cobertura ARIA 0% en LHR
+### O-001 — Cobertura ARIA 0% en LHR ✅ RESUELTO
 
 **Problema:** Las 3 llamadas de LHR de la semana Abr 7-14 no fueron auditadas por ARIA (cobertura 0/3).
 
-**Fix probable:** `aria_audit.py` audita por `VAPI_ASSISTANT_ID` (una sola variable). Para auditar ambos bots, el polling debe iterar sobre `config.ASSISTANTS`.
+**Fix aplicado 2026-04-14:** `aria_audit.py` polling loop ahora itera sobre `config.ASSISTANTS` (ambos Botox + LHR) en vez de usar solo `VAPI_ASSISTANT_ID` env. `fetch_vapi_calls` y `fetch_vapi_calls_range` aceptan `assistant_id` opcional (backward compatible).
 
-**Owner:** Elena Voice (es fix de código, no de prompt) — pendiente, abriré task aparte.
+Log del server al arrancar:
+```
+ARIA Polling: auditando 2 assistant(s):
+  ['1631c7cf-2914-45f9-bf82-6635cdf00aba', '3d5b77b5-f36c-4b95-88bc-4d6484277380']
+```
+
+Efecto: la próxima corrida del cron semanal (lunes 20) tendrá cobertura ARIA > 0% en LHR → top razones no_agendo confiables para ambos tratamientos.
 
 ### O-002 — Tasa de no-contestación 63-95% (Botox)
 
@@ -195,6 +244,10 @@ Estos patrones aparecen en la data pero **el fix no está en el prompt** — req
 | Fecha | Evento |
 |-------|--------|
 | 2026-04-14 | Archivo creado con P-001, P-002, P-003 + O-001, O-002, O-003 a partir de AUDIT_898_CALLS.md + primera corrida dry-run de audit_continuous.py |
+| 2026-04-14 | O-001 resuelto: ARIA polling ahora itera sobre ASSISTANTS (audita Botox + LHR) |
+| 2026-04-14 | P-002 aplicado: system_prompt.txt sincronizado con live de Vapi + header documentando fuente |
+| 2026-04-14 | P-001 aplicado: STATE 5 de Botox simplificado. SMS/email de GHL cubren la dirección. Prompt body 21353→21281 chars. SHA `59b2ca1ebf056147` |
+| 2026-04-14 | P-004 abierto: STATE 5 de LHR tiene texto corrupto ("oral Gables", duplicación) — espera aprobación de Juan + verificación del workflow GHL de LHR |
 
 ---
 

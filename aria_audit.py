@@ -244,10 +244,15 @@ def supabase_select(table: str, filters: dict = None, limit: int = 100) -> list:
 # VAPI API
 # ============================================================
 
-def fetch_vapi_calls(hours_back: int = 25, limit: int = 500) -> list:
-    """Obtener llamadas de Vapi. FIX #3: limit default 500."""
+def fetch_vapi_calls(hours_back: int = 25, limit: int = 500,
+                      assistant_id: Optional[str] = None) -> list:
+    """Obtener llamadas de Vapi. FIX #3: limit default 500.
+
+    Si assistant_id se provee, filtra por ese assistant. Si no, usa VAPI_ASSISTANT_ID
+    del env (backward compat con callers existentes que siempre auditaban Botox).
+    """
     _vapi_key = os.environ.get("VAPI_API_KEY") or VAPI_API_KEY
-    _assistant_id = os.environ.get("VAPI_ASSISTANT_ID") or VAPI_ASSISTANT_ID
+    _assistant_id = assistant_id or os.environ.get("VAPI_ASSISTANT_ID") or VAPI_ASSISTANT_ID
     cutoff_str = _utc_cutoff(hours=hours_back).replace("Z", ".000Z")
     r = requests.get(
         "https://api.vapi.ai/call",
@@ -259,14 +264,19 @@ def fetch_vapi_calls(hours_back: int = 25, limit: int = 500) -> list:
         log.error(f"Vapi API error: {r.status_code} — {r.text[:200]}")
         return []
     calls = r.json()
-    log.info(f"Fetched {len(calls)} calls from Vapi")
+    log.info(f"Fetched {len(calls)} calls from Vapi (assistant={_assistant_id[:8]}...)")
     return calls
 
 
-def fetch_vapi_calls_range(utc_start: str, utc_end: str, limit: int = 500) -> list:
-    """Obtener llamadas de Vapi en un rango de fechas específico."""
+def fetch_vapi_calls_range(utc_start: str, utc_end: str, limit: int = 500,
+                            assistant_id: Optional[str] = None) -> list:
+    """Obtener llamadas de Vapi en un rango de fechas específico.
+
+    Si assistant_id se provee, filtra por ese assistant. Si no, usa VAPI_ASSISTANT_ID
+    del env (backward compat).
+    """
     _vapi_key = os.environ.get("VAPI_API_KEY") or VAPI_API_KEY
-    _assistant_id = os.environ.get("VAPI_ASSISTANT_ID") or VAPI_ASSISTANT_ID
+    _assistant_id = assistant_id or os.environ.get("VAPI_ASSISTANT_ID") or VAPI_ASSISTANT_ID
     vapi_start = utc_start.replace("Z", ".000Z")
     vapi_end = utc_end.replace("Z", ".000Z")
     r = requests.get(
@@ -2612,12 +2622,27 @@ _polling_lock = _threading.Lock()
 def _aria_polling_loop(interval_seconds: int = 180):
     log.info("ARIA Polling iniciado — intervalo: " + str(interval_seconds) + "s, primer ciclo en 30s")
     first_run = True
+
+    # O-001: auditar todos los assistants configurados, no solo Botox.
+    # Importamos aquí (no a top-level) para evitar ciclos si config importa aria_audit.
+    try:
+        from config import ASSISTANTS as _CONFIG_ASSISTANTS
+        _assistant_ids = list(_CONFIG_ASSISTANTS.keys())
+    except Exception as e:
+        log.warning(f"ARIA Polling: no pude cargar config.ASSISTANTS ({e}) — uso VAPI_ASSISTANT_ID env")
+        _assistant_ids = [None]  # None → fetch_vapi_calls usa env var
+
+    log.info(f"ARIA Polling: auditando {len(_assistant_ids)} assistant(s): {_assistant_ids}")
+
     while True:
         try:
             _time.sleep(30 if first_run else interval_seconds)
             first_run = False
             log.info("ARIA Polling: buscando llamadas no auditadas...")
-            calls = fetch_vapi_calls(hours_back=1, limit=30)
+            # Traer llamadas de TODOS los assistants configurados y concatenar
+            calls = []
+            for aid in _assistant_ids:
+                calls.extend(fetch_vapi_calls(hours_back=1, limit=30, assistant_id=aid))
             ended_calls = [c for c in calls if c.get("status") == "ended"]
             if not ended_calls:
                 log.info("ARIA Polling: sin llamadas terminadas en la ultima hora")
