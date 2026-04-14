@@ -151,8 +151,36 @@ Una vez que la Tarea 2 esté corriendo, usa los reportes para proponer cambios c
 
 Cuando termines algo o necesites algo, escríbelo aquí abajo (yo lo leo periódicamente):
 
-### [pendiente]
-- (Vacío)
+### 2026-04-14 — T19 COMPLETO (CI/CD elena-voice) ✅
+
+Las 3 capas de protección están operativas sobre `elena-voice`:
+
+**Capa 1 — pre-push hook** (`.githooks/pre-push`)
+- `git config core.hooksPath .githooks` ya aplicado en este clone
+- Bloquea push a `main` si `test_syntax.py` o `test_bots_config.py` fallan
+- Bypass de emergencia: `git push --no-verify` (documentado en `.githooks/README.md`)
+
+**Capa 2 — GitHub Actions** (`.github/workflows/ci.yml`)
+- Trigger: push + PR a main + workflow_dispatch
+- Python 3.12, instala `requirements.txt`, corre ambos suites
+- Primer run en verde: https://github.com/stephaneecerebromaestro/elena-voice/actions/runs/24416180874 (18s)
+
+**Capa 3 — Branch protection main** (vía `gh api`)
+- `required_status_checks: ["Lint and test"]` con `strict: true`
+- `allow_force_pushes: false`, `allow_deletions: false`
+- Confirmado por API (respuesta 200 con la config aplicada)
+
+**Tests construidos:**
+- `tests/test_syntax.py`: imports de config/aria_audit/app, helpers multi-treatment (`set_active_config` / `get_active_calendar_id` / fallback a Botox para assistantId desconocido), 13 rutas Flask registradas, los 9 tool handlers de Vapi definidos
+- `tests/test_bots_config.py`: Botox + LHR presentes, campos completos (`name`, `treatment`, `calendar_id`, `pipeline_id`, `booking_title`), `DEFAULT_ASSISTANT_ID` resolvable, `calendar_ids` únicos (evita cross-booking)
+
+**Nota técnica:** `aria_audit.py` inicia threads non-daemon al importarse (polling + weekly cron). `test_syntax.py` termina con `os._exit(0)` para no colgar. CI y pre-push corren en ~1-18s.
+
+**Commits:** `bac87e5` (setup inicial) + `cec07a0` (fix force-exit).
+
+Arrancando ahora con Tarea 2 (`scripts/audit_continuous.py`).
+
+— Elena Voice
 
 ---
 
