@@ -26,7 +26,7 @@
 | P-001 | Dirección completa dictada en despedida (Botox) | `applied` 2026-04-14 | Botox | 2026-04-14 |
 | P-002 | Desync entre `system_prompt.txt` del repo y prompt live en Vapi | `applied` 2026-04-14 | Botox | 2026-04-14 |
 | P-003 | Loops de `check_availability` persisten pese a FIX D | `observing` | LHR | 2026-04-14 |
-| P-004 | STATE 5 de LHR tiene texto corrupto ("oral Gables", duplicado "por mensaje") | `proposed` | LHR | 2026-04-14 |
+| P-004 | STATE 5 de LHR tiene texto corrupto ("oral Gables", duplicado "por mensaje") | `applied` 2026-04-14 | LHR | 2026-04-14 |
 
 **Estados:** `proposed` → `approved` → `applied` → `verified` · o `rejected` · o `observing` (pre-propuesta, recolectando más data)
 
@@ -165,7 +165,7 @@ Sin embargo, en la primera corrida de `audit_continuous.py` (ventana 2026-04-07 
 
 ## P-004 — STATE 5 de LHR tiene texto corrupto
 
-**Estado:** `proposed` · **Bot:** LHR · **Prioridad:** ALTA · **Riesgo:** BAJO (fix de bug, no cambio de política)
+**Estado:** `applied` 2026-04-14 · **Bot:** LHR · **Prioridad:** ALTA · **Riesgo:** BAJO (fix de bug, no cambio de política)
 
 ### Problema observado
 Al verificar el prompt live de LHR post-P-001, encontré que el STATE 5 de LHR tiene **texto malformado** (aparente edición previa incompleta):
@@ -192,11 +192,11 @@ Te mando ahora la dirección y los detalles por mensaje. ¡Que tengas un excelen
 - Confirmar que el workflow GHL del calendario LHR (`gQclGhEhZ2K1NkLal7pt`) envía SMS post-booking con dirección, igual que Botox. Si no hay bookings LHR aún (hasta ahora hay 0), no podemos verificar el SMS con data real → pedir a Juan que confirme el workflow GHL de LHR.
 
 ### Checklist antes de aplicar
-- [ ] Juan aprueba
-- [ ] Confirmar workflow GHL de LHR tiene SMS post-booking con dirección
-- [ ] Aplicar vía PATCH Vapi
-- [ ] Guardar prompt live de LHR en `system_prompt_lhr.txt` (mirror) al repo
-- [ ] Test con llamada (número interno)
+- [x] Juan aprueba (2026-04-14, "arreglalo")
+- [x] Confirmar workflow GHL de LHR tiene SMS post-booking con dirección — **verificado con 4 bookings reales recientes** (Jose, Ava, Francesco, Karina): todos recibieron SMS con "4649 Ponce De Leon, Suite 302, Coral Gables"
+- [x] Aplicar vía PATCH Vapi — HTTP 200. SHA `4c47ddaf6986e9ab` → `15875198debb0f9d`. Body 23478→23431 chars (-47)
+- [x] Guardar prompt live de LHR en `system_prompt_lhr.txt` (mirror) al repo
+- [ ] Test con llamada (número interno) — pendiente de Juan
 
 ---
 
@@ -248,6 +248,7 @@ Efecto: la próxima corrida del cron semanal (lunes 20) tendrá cobertura ARIA >
 | 2026-04-14 | P-002 aplicado: system_prompt.txt sincronizado con live de Vapi + header documentando fuente |
 | 2026-04-14 | P-001 aplicado: STATE 5 de Botox simplificado. SMS/email de GHL cubren la dirección. Prompt body 21353→21281 chars. SHA `59b2ca1ebf056147` |
 | 2026-04-14 | P-004 abierto: STATE 5 de LHR tiene texto corrupto ("oral Gables", duplicación) — espera aprobación de Juan + verificación del workflow GHL de LHR |
+| 2026-04-14 | P-004 aplicado: texto corrupto de LHR normalizado a la misma despedida limpia de Botox. SMS LHR verificado con 4 bookings. SHA `15875198debb0f9d`. Mirror en `system_prompt_lhr.txt`. |
 
 ---
 
