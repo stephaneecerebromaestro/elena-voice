@@ -1,0 +1,41 @@
+#!/bin/bash
+# Pre-push hook: run tests before allowing push to main.
+# Bypass with: git push --no-verify (use only for emergencies)
+
+set -e
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Only block on pushes to main
+while read local_ref local_sha remote_ref remote_sha; do
+  if [[ "$remote_ref" == "refs/heads/main" ]]; then
+    echo "pre-push: running tests before pushing to main..."
+
+    # Minimal env so imports don't fail
+    export GHL_PIT="${GHL_PIT:-test}"
+    export GHL_LOCATION_ID="${GHL_LOCATION_ID:-test}"
+    export VAPI_API_KEY="${VAPI_API_KEY:-test}"
+    export VAPI_ASSISTANT_ID="${VAPI_ASSISTANT_ID:-1631c7cf-2914-45f9-bf82-6635cdf00aba}"
+    export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-test}"
+    export SUPABASE_URL="${SUPABASE_URL:-https://test.supabase.co}"
+    export SUPABASE_SERVICE_KEY="${SUPABASE_SERVICE_KEY:-test}"
+    export TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-test}"
+    export TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-0}"
+
+    PY=""
+    if [ -x /tmp/elena_venv/bin/python ]; then PY=/tmp/elena_venv/bin/python
+    elif command -v python3 >/dev/null 2>&1; then PY=python3
+    else echo "pre-push: no python found, skipping"; exit 0; fi
+
+    "$PY" tests/test_syntax.py || {
+      echo "pre-push: test_syntax.py FAILED. Push blocked. Fix or use --no-verify to bypass."
+      exit 1
+    }
+    "$PY" tests/test_bots_config.py || {
+      echo "pre-push: test_bots_config.py FAILED. Push blocked. Fix or use --no-verify to bypass."
+      exit 1
+    }
+    echo "pre-push: all tests passed."
+  fi
+done
+exit 0
