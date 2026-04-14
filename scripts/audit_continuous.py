@@ -379,7 +379,7 @@ def format_markdown(results: list[dict], utc_cur: tuple[str, str],
             f"| Costo total | {_usd(c['total_cost'])} | {_usd(p['total_cost'])} |",
             f"| Costo por llamada | {_usd(c['avg_cost'])} | {_usd(p['avg_cost'])} |",
             f"| Costo por booking | {_usd(c['cost_per_booking'])} | {_usd(p['cost_per_booking'])} |",
-            f"| Cobertura auditoría ARIA | {_pct(c['audit_coverage'])} ({c['audited']}/{c['total_calls']}) | {_pct(p['audit_coverage'])} |",
+            f"| Cobertura auditoría | {_pct(c['audit_coverage'])} ({c['audited']}/{c['total_calls']}) | {_pct(p['audit_coverage'])} |",
             "",
             "### Desglose de outcomes",
             "",
@@ -401,7 +401,7 @@ def format_markdown(results: list[dict], utc_cur: tuple[str, str],
                       "_Sin llamadas no_agendo auditadas esta semana._"]
 
         if c["top_errors"]:
-            lines += ["", "### Top errores detectados por ARIA", "",
+            lines += ["", "### Top errores detectados", "",
                       "| Error | Ocurrencias |", "|---|---:|"]
             for err_type, n in c["top_errors"]:
                 lines.append(f"| {err_type} | {n} |")

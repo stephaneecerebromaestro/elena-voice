@@ -62,6 +62,17 @@ CONFIDENCE_THRESHOLD_CORRECTION = float(os.getenv("CONFIDENCE_THRESHOLD_CORRECTI
 ARIA_VERSION = "3.1.1"
 AUDIT_MODEL = "claude-sonnet-4-5"
 
+# ────────────────────────────────────────────────────────────────────────────
+# REBRAND 2026-04-14 (Opción A — cosmético, ver REBRAND_ARIA.md)
+# Toda la plumbing interna sigue llamándose ARIA (tablas Supabase, env vars,
+# logger name, cron jobs de Render, endpoints /aria/*, archivos aria_*.py).
+# SOLO los mensajes que Juan ve (Telegram, email) usan BRAND_DISPLAY.
+# No editar tablas ni endpoints sin plan de migración — ver REBRAND_ARIA.md.
+BRAND_DISPLAY = "Elena Voice · Auditoría"
+BRAND_SHORT = "Elena Voice"
+BRAND_BOT_LABEL = "Auditor"  # reemplaza "ARIA" cuando aparece como emoji+nombre
+# ────────────────────────────────────────────────────────────────────────────
+
 _calls_in_progress: set = set()
 _calls_in_progress_lock = _threading.Lock()
 
@@ -479,12 +490,12 @@ def telegram_notify_call(
         ]
         errors_section = "\n\n⚠️ <b>Errores de playbook:</b>\n" + "\n".join(lines)
     sep = "━" * 24
-    header = level_icon + " <b>ARIA · " + level_label + "</b>\n" + sep
+    header = level_icon + " <b>" + BRAND_DISPLAY + " · " + level_label + "</b>\n" + sep
     meta = name_line + "📞 <code>+" + phone_display + "</code>  " + datetime_line + dur_text
     if has_discrepancy:
         outcome_block = (
             "📋 GHL: <b>" + orig_label + "</b>\n"
-            "🤖 ARIA: <b>" + aria_label + "</b>  (" + str(confidence_pct) + "% confianza)\n"
+            "🤖 " + BRAND_BOT_LABEL + ": <b>" + aria_label + "</b>  (" + str(confidence_pct) + "% confianza)\n"
             "📊 Playbook: " + playbook_text
         )
     else:
@@ -1226,7 +1237,7 @@ def _format_report_telegram(data: dict) -> str:
 
     connected = total - no_contesto
     lines = [
-        "📊 <b>ARIA · " + data["label"] + "</b>",
+        "📊 <b>" + BRAND_DISPLAY + " · " + data["label"] + "</b>",
         "━━━━━━━━━━━━━━━━━━━━━━━━",
         "📞 Llamadas totales: <b>" + str(vapi_total) + "</b> (Vapi) | Auditadas: " + str(total) + " (" + str(coverage) + "%)",
         "👥 Contactos únicos: <b>" + str(unique) + "</b>",
@@ -1385,7 +1396,7 @@ def _send_weekly_report_command(chat_id: str):
     total_conv = totals["agendo"] / totals["connected"] * 100 if totals["connected"] > 0 else 0
 
     text = (
-        "📊 <b>ARIA · Reporte 7 Días</b>\n"
+        "📊 <b>" + BRAND_DISPLAY + " · Reporte 7 Días</b>\n"
         "📅 " + (now_edt - timedelta(days=6)).strftime("%d/%m") + " → " + now_edt.strftime("%d/%m/%Y") + "\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "📞 Total: <b>" + str(totals["vapi"]) + "</b> | ✅ Agendadas: <b>" + str(totals["agendo"]) + "</b>\n"
@@ -1475,7 +1486,7 @@ def _send_audit_summary(summary: dict, label: str, chat_id: str):
     disc_note = (
         "\n🔍 Discrepancias: <b>" + str(disc) + "</b> — usa /reporte para ver outcomes actualizados"
         if disc > 0 else
-        "\n✅ Sin discrepancias GHL vs ARIA"
+        "\n✅ Sin discrepancias GHL vs auditor"
     )
     text = (
         "✅ <b>Audit completado — " + label + "</b>\n"
@@ -1675,12 +1686,12 @@ def _send_efficacy_report(chat_id: str):
     r_total = r_approved + r_rejected
     r_acc = str(round(r_approved / r_total * 100, 1)) + "%" if r_total > 0 else "N/A"
     text = (
-        "🎯 <b>Eficacia de ARIA</b>\n"
+        "🎯 <b>Eficacia del auditor</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "<b>Histórico:</b> " + acc + " (" + str(approved) + " aprobadas / " + str(rejected) + " rechazadas)\n"
         "<b>Últimos 7d:</b> " + r_acc + " (" + str(r_approved) + " aprobadas / " + str(r_rejected) + " rechazadas)\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "ℹ️ Eficacia = % de correcciones de ARIA que Juan aprobó"
+        "ℹ️ Eficacia = % de correcciones del auditor que Juan aprobó"
     )
     telegram_send(text, chat_id=chat_id)
 
@@ -1721,7 +1732,7 @@ def _send_call_detail(chat_id: str, call_id: str):
         "📱 Teléfono: " + (r.get("phone_number") or "N/A") + "\n"
         "⏱ Duración: " + str(r.get("call_duration_seconds") or "N/A") + "s\n"
         "📋 GHL dice: <b>" + (r.get("original_outcome") or "N/A") + "</b>\n"
-        "🤖 ARIA dice: <b>" + (r.get("aria_outcome") or "N/A") + "</b> (" + str(int((r.get("aria_confidence") or 0) * 100)) + "%)\n"
+        "🤖 " + BRAND_BOT_LABEL + " dice: <b>" + (r.get("aria_outcome") or "N/A") + "</b> (" + str(int((r.get("aria_confidence") or 0) * 100)) + "%)\n"
         "📊 Playbook: <b>" + pb_str + "</b>\n"
         "🔍 Estado: " + (r.get("audit_status") or "N/A")
         + errors_text + intel_text + "\n"
@@ -2111,7 +2122,7 @@ def _send_status(chat_id: str):
     gap = len([c for c in vapi_recent_ended if c.get("id") not in supa_recent_ids])
 
     text = (
-        "🔧 <b>Estado del Sistema ARIA</b>\n"
+        "🔧 <b>Estado del Sistema — " + BRAND_DISPLAY + "</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "🕐 Ahora: " + datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M") + " UTC\n\n"
         "📡 <b>Vapi:</b>\n"
@@ -2121,7 +2132,7 @@ def _send_status(chat_id: str):
         "  Último audit: " + last_supa_ago + " (" + last_supa_time + ")\n"
         "  Audits últimas 2h: " + str(len(supa_recent)) + "\n\n"
         + ("🟢" if gap == 0 else "🟡" if gap < 5 else "🔴") + " <b>Gap actual:</b> " + str(gap) + " llamadas en Vapi sin auditar\n\n"
-        "🤖 <b>ARIA v" + ARIA_VERSION + "</b>\n"
+        "🤖 <b>" + BRAND_DISPLAY + " v" + ARIA_VERSION + "</b>\n"
         "  Modelo: " + AUDIT_MODEL + "\n"
         "  Polling: activo (cada 3min)\n"
         "  Webhook: activo"
@@ -2258,7 +2269,7 @@ def _send_tendencia_inner(chat_id: str):
 
 def _send_ayuda(chat_id: str):
     text = (
-        "🤖 <b>ARIA v" + ARIA_VERSION + " — Comandos disponibles</b>\n"
+        "🤖 <b>" + BRAND_DISPLAY + " v" + ARIA_VERSION + " — Comandos disponibles</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "📊 <b>REPORTES</b>\n"
         "  /reporte hoy — día en curso\n"
@@ -2272,7 +2283,7 @@ def _send_ayuda(chat_id: str):
         "📈 <b>DIAGNÓSTICO</b>\n"
         "  /errores [días] — top errores de Elena\n"
         "  /score — score últimos 7 días\n"
-        "  /eficacia — precisión de ARIA\n"
+        "  /eficacia — precisión del auditor\n"
         "  /llamada [id] — detalle de una llamada\n\n"
         "🧠 <b>INTELIGENCIA</b>\n"
         "  /intel [días] — zonas, objeciones, preguntas\n"
@@ -2309,7 +2320,7 @@ def telegram_send_daily_report(metrics: dict, audit_date: str, top_errors: list,
     score_bar = "█" * (elena_score // 10) + "░" * (10 - elena_score // 10)
 
     text = (
-        "📊 <b>ARIA · Reporte Diario — " + audit_date + "</b>\n"
+        "📊 <b>" + BRAND_DISPLAY + " · Reporte Diario — " + audit_date + "</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "📞 Total: <b>" + str(total) + "</b> | 👥 Únicos: <b>" + str(unique) + "</b>\n\n"
         "📋 <b>OUTCOMES</b>\n"
@@ -2336,7 +2347,7 @@ def telegram_send_daily_report(metrics: dict, audit_date: str, top_errors: list,
         rejected = aria_efficacy.get("rejected", 0)
         total_fb = approved + rejected
         acc = str(round(approved / total_fb * 100)) + "%" if total_fb > 0 else "N/A"
-        text += "\n🎯 <b>ARIA:</b> " + acc + " precisión (" + str(approved) + "✅ " + str(rejected) + "❌)"
+        text += "\n🎯 <b>" + BRAND_BOT_LABEL + ":</b> " + acc + " precisión (" + str(approved) + "✅ " + str(rejected) + "❌)"
 
     result = telegram_send(text)
     return result is not None
@@ -2352,7 +2363,7 @@ def build_report_text(results: list, metrics: dict, audit_date: str, aria_effica
     conversion = metrics.get("conversion_rate", 0) * 100
     elena_score = _calculate_elena_score(metrics)
     lines = [
-        "ARIA — Reporte " + report_type.capitalize() + " — " + audit_date,
+        BRAND_DISPLAY + " — Reporte " + report_type.capitalize() + " — " + audit_date,
         "=" * 50,
         "Total llamadas: " + str(total),
         "Agendadas: " + str(agendo) + " (" + str(round(conversion, 1)) + "% conversión)",
@@ -2361,7 +2372,7 @@ def build_report_text(results: list, metrics: dict, audit_date: str, aria_effica
     if aria_efficacy:
         approved = aria_efficacy.get("approved", 0)
         rejected = aria_efficacy.get("rejected", 0)
-        lines.append("Eficacia ARIA: " + str(approved) + " aprobadas / " + str(rejected) + " rechazadas")
+        lines.append("Eficacia auditor: " + str(approved) + " aprobadas / " + str(rejected) + " rechazadas")
     return "\n".join(lines)
 
 
@@ -2385,12 +2396,12 @@ def send_email_report(report_text: str, audit_date: str, metrics: dict, subject_
         conversion = metrics.get("conversion_rate", 0) * 100
         elena_score = _calculate_elena_score(metrics)
 
-        subject = "ARIA | Elena " + subject_prefix + " " + audit_date + " — " + str(total) + " llamadas | " + str(agendo) + " citas | Conversión " + str(round(conversion, 1)) + "% | Score " + str(elena_score) + "/100"
+        subject = BRAND_SHORT + " | " + subject_prefix + " " + audit_date + " — " + str(total) + " llamadas | " + str(agendo) + " citas | Conversión " + str(round(conversion, 1)) + "% | Score " + str(elena_score) + "/100"
 
         html_body = "<html><body style='font-family:monospace;background:#0f0f0f;color:#e0e0e0;padding:24px'><h2 style='color:#00d4aa'>ARIA — Reporte " + subject_prefix + " de Elena</h2><p style='color:#888'>Fecha: " + audit_date + "</p><pre style='background:#1a1a1a;padding:16px;border-radius:8px;font-size:13px;line-height:1.6'>" + report_text + "</pre><hr style='border-color:#333'><p style='color:#555;font-size:11px'>Generado automáticamente por ARIA v" + ARIA_VERSION + ".</p></body></html>"
 
         msg = MIMEMultipart("alternative")
-        msg["From"] = "ARIA — Elena Monitor <" + gmail_from + ">"
+        msg["From"] = BRAND_DISPLAY + " <" + gmail_from + ">"
         msg["To"] = ADMIN_EMAIL
         msg["Subject"] = subject
         msg.attach(MIMEText(report_text, "plain", "utf-8"))
@@ -2594,7 +2605,7 @@ def telegram_send_weekly_report(weekly: dict, start_date: str, end_date: str) ->
     avg_conv = weekly.get("avg_conversion_rate", 0) * 100
 
     text = (
-        "📊 <b>ARIA · Reporte Semanal</b>\n"
+        "📊 <b>" + BRAND_DISPLAY + " · Reporte Semanal</b>\n"
         "📅 " + start_date + " → " + end_date + "\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "📞 Total llamadas: <b>" + str(total) + "</b>\n"
@@ -2780,7 +2791,7 @@ def run_weekly_error_report():
     total_errors = sum(len(v) for v in error_data.values())
 
     lines = [
-        "📊 <b>ARIA · REPORTE SEMANAL DE ERRORES</b>",
+        "📊 <b>" + BRAND_DISPLAY + " · REPORTE SEMANAL DE ERRORES</b>",
         "━━━━━━━━━━━━━━━━━━━━━━━━",
         "📅 Período: " + week_start + " → " + today_str,
         "📞 Llamadas auditadas: " + str(total_calls) + " | Errores detectados: " + str(total_errors),
