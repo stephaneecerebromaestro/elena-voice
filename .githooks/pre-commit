@@ -1,0 +1,61 @@
+#!/bin/bash
+# Pre-commit hook: si alguien modifica system_prompt*.txt directamente,
+# le recuerda que esos archivos son MIRRORS y no propagan a producción.
+#
+# Se puede bypass con: git commit --no-verify  (solo en emergencia o
+# cuando ya publicaste con update_prompt.py y quieres commitear el
+# mirror regenerado).
+
+set -e
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Archivos en el staging que son mirrors
+changed_mirrors=$(git diff --cached --name-only --diff-filter=M | \
+  grep -E '^system_prompt(_[a-z]+)?\.txt$' || true)
+
+if [ -z "$changed_mirrors" ]; then
+  exit 0
+fi
+
+# Si el mensaje de commit (vacío todavía en pre-commit) o el staging
+# incluye solo cambios de header / SHA del mirror, probablemente viene
+# de update_prompt.py — dejarlo pasar. Heurística: si los únicos archivos
+# modificados son mirrors Y el diff toca solo líneas del header (# ...),
+# dejar pasar. Si el diff toca líneas del prompt body, bloquear.
+
+block=0
+for f in $changed_mirrors; do
+  # ¿Hay cambios fuera de líneas de comentario?
+  body_changes=$(git diff --cached "$f" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---|[+-]#|[+-]\s*$)' || true)
+  if [ -n "$body_changes" ]; then
+    block=1
+    echo ""
+    echo "pre-commit: modificaste el body de $f"
+    echo "---"
+    echo ""
+    echo "Este archivo es un MIRROR del prompt live en Vapi."
+    echo "Editarlo NO cambia el prompt que corre en produccion."
+    echo ""
+    echo "Para aplicar cambios al prompt live:"
+    echo ""
+    case "$f" in
+      system_prompt.txt)      echo "  python3 scripts/update_prompt.py --bot botox --dry-run" ;;
+      system_prompt_lhr.txt)  echo "  python3 scripts/update_prompt.py --bot lhr   --dry-run" ;;
+      *)                      echo "  python3 scripts/update_prompt.py --bot <bot> --dry-run" ;;
+    esac
+    echo "  (revisar el diff, luego sin --dry-run para aplicar)"
+    echo ""
+    echo "El script regenera el mirror con header actualizado y podras"
+    echo "hacer git add + commit sin esta alerta."
+    echo ""
+    echo "Si ya publicaste con update_prompt.py y solo quieres commitear"
+    echo "el mirror regenerado, usa: git commit --no-verify"
+    echo ""
+  fi
+done
+
+if [ "$block" = "1" ]; then
+  exit 1
+fi
+exit 0

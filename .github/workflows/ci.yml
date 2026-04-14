@@ -48,6 +48,9 @@ jobs:
       - name: Audit script smoke tests
         run: python tests/test_audit_continuous.py
 
+      - name: Prompt drift detector smoke tests
+        run: python tests/test_prompt_drift.py
+
       - name: Summary
         if: success()
         run: echo "All tests passed - safe to deploy."

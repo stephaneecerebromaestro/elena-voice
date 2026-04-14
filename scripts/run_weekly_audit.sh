@@ -32,5 +32,14 @@ mkdir -p "$(dirname "$LOG")"
   source "$ENV_FILE"
 
   cd "$REPO"
+
+  # Drift check antes del audit — si los mirrors del repo divergen del
+  # prompt live en Vapi, alerta pero no bloquea el audit.
+  echo ""
+  echo "--- Prompt drift check ---"
+  if ! "$PY" scripts/check_prompt_drift.py; then
+    echo "⚠️  Drift detectado. El audit sigue pero conviene revisar."
+  fi
+
   "$PY" scripts/audit_continuous.py
 } >> "$LOG" 2>&1
