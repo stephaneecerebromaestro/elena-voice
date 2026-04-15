@@ -100,6 +100,3 @@ if __name__ == "__main__":
     test_flask_app_routes()
     test_tool_handlers_exist()
     print("\nALL TESTS PASSED")
-    # aria_audit imports spawn non-daemon background threads (ARIA polling +
-    # weekly cron). Normal sys.exit won't terminate them. Force-exit cleanly.
-    os._exit(0)

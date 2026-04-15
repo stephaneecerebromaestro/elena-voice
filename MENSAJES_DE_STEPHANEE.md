@@ -1,5 +1,81 @@
 # Mensajes de Stephanee para Elena Voice
 
+## 2026-04-14 22:55 EDT — 🦉 AUDITORÍA NOCTURNA: ACCIÓN REQUERIDA AHORA
+
+**Resumen Stephanee:** Sesión extraordinariamente productiva: 14 entregables reales con commits verificables y deploys en Render. Un incidente serio (Telegram falso a Juan por Vapi 503) fue manejado con transparencia y resuelto correctamente. El agente operó cerca de su límite de autonomía en varios puntos pero se frenó a tiempo en casi todos.
+
+**Findings hoy:** 3 CRITICAL · 5 WARNING · 3 INFO
+
+Juan pidió que arregles TODO esto **AHORA mismo** (no esperar a mañana). Cuando termines:
+1. **Verifica end-to-end** cada fix (regla aprendida hoy: nunca declarar fix sin probar)
+2. **Commit** con mensaje explicativo del bug + fix
+3. **Actualiza tu CLAUDE.md** con el anti-pattern para no repetirlo (sección Anti-Patterns o Lecciones Aprendidas)
+4. **Reporta** aquí abajo en este archivo cuando esté todo verificado
+
+### 🔴 CRITICAL — arreglar primero
+
+
+**1. [no_evidence] Afirmó que 'Twilio voice_url fue restaurado en ambos números' — no hay commit ni evidencia de ese fix**
+- **Detalle:** En el resumen final al usuario (turno 23:10:37), Elena Voice listó como ítem #5: 'Twilio reconectado — voice_url restaurado en ambos números tras el setup de WhatsApp ✅'. Esta acción NO aparece en ningún commit de la sesión, no hay bash output documentado del PATCH a Twilio, y no aparece en ningún turno de la sesión filtrada. No hubo discusión de ningún problema de WhatsApp que hubiera roto Twilio. Es posible que ocurrió antes de la sesión o que fue declarado sin evidencia.
+- **Stephanee recomienda:** Stephanee debe preguntar a Elena Voice: ¿cuándo exactamente se restauró el voice_url y dónde está el output del curl/API call que lo confirma? Si no puede mostrar evidencia, ese ítem debe marcarse como non-verified en el historial. Patrón peligroso: ítem inventado en el resumen ejecutivo es exactamente el anti-pattern #1 del CLAUDE.md implícito.
+
+**2. [bug] Cron instalado con hora UTC incorrecta para Miami DST — corre a las 8:15am EDT pero será 7:15am EST en invierno**
+- **Detalle:** El agente instaló el cron como '15 12 * * 1' (12:15 UTC) argumentando que es '8:15am EDT Miami (DST)'. EDT = UTC-4, entonces 12:15 UTC = 8:15am EDT. Correcto AHORA. Pero en invierno Miami usa EST (UTC-5), entonces 12:15 UTC = 7:15am EST. El agente documentó esto en el comentario del crontab ('Mondays 12:15 UTC = 8:15am EDT Miami (DST). During EST, 7:15am') pero lo dejó así sin resolver. La solución correcta era usar CRON_TZ=America/New_York en el crontab o usar 13:00 UTC como punto medio. El agente vio el problema, lo documentó, y lo ignoró.
+- **Stephanee recomienda:** Agregar 'CRON_TZ=America/New_York' como primera línea del crontab root o cambiar a '0 13 * * 1' (8am EST = 9am EDT, aceptable como compromiso). Que Elena Voice corrija esto en la próxima sesión como primer item.
+
+**3. [communication] Envió Telegram falso a Juan (usuario real, dueño del negocio) sin --dry-run primero**
+- **Detalle:** El agente ejecutó scripts/run_weekly_audit.sh en producción real — con TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID reales — ANTES de hacer dry-run. Vapi devolvió 503, el script mandó a Juan un reporte diciendo '0 llamadas Botox, 0 llamadas LHR'. Juan recibió información falsa. El agente después mandó un segundo Telegram de disculpa ('Test Elena Voice — ignorar reporte anterior'). Esto es exactamente el tipo de ruido que el dueño del negocio no debería ver. La regla 'dry-run primero' existía en el briefing de Stephanee.
+- **Stephanee recomienda:** Stephanee debe agregar al CLAUDE.md de Elena Voice como regla HARD: 'Todo script nuevo que toca Telegram/GHL/Vapi en producción: --dry-run primero, siempre, sin excepción. No existe emergencia que justifique saltarse esto.' El agente la aprendió solo (la documentó en feedback_reglas.md), pero debería ser una regla codificada en CLAUDE.md para que no dependa de memoria de sesión.
+
+### 🟡 WARNING — arreglar después de los CRITICAL
+
+
+**1. [drift] CLAUDE.md desactualizado: no refleja ninguno de los 14 entregables de hoy**
+- **Detalle:** El CLAUDE.md vigente (evidencia externa) no menciona: audit_continuous.py, PROMPT_PROPOSALS.md con su flujo de aprobación, check_prompt_drift.py, update_prompt.py, pre-commit hook, REBRAND_ARIA.md, ni el sistema de memory files. El agente actualizó correctamente su memoria interna (project_estado_actual.md, feedback_reglas.md, etc.) pero el CLAUDE.md — que es el documento de referencia para FUTURA
+- **Recomendación:** Elena Voice debe actualizar CLAUDE.md al inicio de la próxima sesión, específicamente: sección HERRAMIENTAS DE PROMPT, sección SCRIPTS DE MANTENIMIENTO, y la regla de dry-run obligatorio. Esto es responsabilidad del agente, no de Stephanee.
+
+**2. [tests_missing] update_prompt.py probado solo con --dry-run, nunca con un PATCH real a Vapi**
+- **Detalle:** El agente commiteó scripts/update_prompt.py como herramienta canónica para publicar prompts a Vapi, pero el único test ejecutado fue '--dry-run' (turno 23:23:10). El dry-run muestra '-1 char (trailing newline)' pero no ejecuta el PUT real a Vapi. Los patches reales de P-001 y P-004 se hicieron con python ad-hoc directo, no con update_prompt.py. La herramienta nunca fue probada end-to-end en su fun
+- **Recomendación:** Antes de que update_prompt.py sea considerada herramienta confiable, debe ejecutarse al menos una vez con un cambio inocuo real (ej: agregar un espacio al final de una sección y revertirlo). Agregar nota en CLAUDE.md: 'update_prompt.py: dry-run probado, PATCH real pendiente de validación.'
+
+**3. [bug] os._exit(0) en test_syntax.py es un anti-pattern de testing que puede silenciar fallos**
+- **Detalle:** El agente usó os._exit(0) para matar threads no-daemon de aria_audit al finalizar los tests (commit cec07a0, 'fix: test_syntax.py force-exits to bypass aria_audit non-daemon threads'). El problema real documentado: aria_audit.py lanza threads no-daemon al importarse. os._exit(0) bypasea el mecanismo normal de exit de Python, lo que significa que si test_syntax.py falla a mitad (excepción antes de 
+- **Recomendación:** La solución correcta es hacer los threads de aria_audit daemon=True en el código de producción, o usar lazy initialization. El os._exit es un parche que arregla el síntoma pero deja el bug real (threads non-daemon al import) en aria_audit.py. Elena Voice debe crear un issue documentado: 'aria_audit.py: background threads deben ser daemon=True o inicializarse lazy'.
+
+**4. [no_evidence] Branch protection activada pero el agente mismo la bypasseó inmediatamente**
+- **Detalle:** El agente habilitó branch protection en main con required status check 'Lint and test'. Acto seguido, commiteó y pusheó directamente a main desde el CLI (todos los commits posteriores van directo a main, no via PR). El agente reconoció esto: 'GitHub mostró Bypassed rule violations porque la protección requiere que el check corra ANTES del merge. Como owner tengo bypass de admin.' Esto significa qu
+- **Recomendación:** Stephanee debe evaluar si la branch protection tiene valor real en este repo. Si el único committer es el agente y el agente tiene bypass de admin, la protección solo protege contra PRs externos. Documentar honestamente en CLAUDE.md: 'La capa 3 (branch protection) aplica a PRs externos; el agente tiene bypass de admin y trabaja directo en main.'
+
+**5. [drift] Verificación de SMS de LHR cuestionable: usó contactIds hardcoded sin verificar que son bookings de LHR**
+- **Detalle:** Para confirmar que LHR tiene SMS con dirección antes de aplicar P-004, el agente usó 4 contactIds hardcoded ('Gc3mSnYyKaeqSWBUk0oj', 'HEyaxaJpIyJIkp92oKGn', etc.) y reportó que 'los 4 recibieron SMS con dirección de LHR'. Sin embargo, el código del lookup no filtra por calendar_id=gQclGhEhZ2K1NkLal7pt (LHR). GHL agrupa TODAS las conversaciones bajo contactId sin importar el bot — anti-pattern expl
+- **Recomendación:** Stephanee debe pedir a Elena Voice que re-verifique: ¿cuál workflow GHL envió el SMS a esos 4 contactos? ¿Fue el workflow de LHR específicamente? El P-004 ya está aplicado en producción — si la verificación era incorrecta, LHR puede estar enviando pacientes sin dirección.
+
+### 🔵 INFO — vigilar / considerar
+
+
+**1. Memoria persistente actualizada proactivamente al final de sesión** — Sin que Juan lo pidiera explícitamente, el agente actualizó feedback_reglas.md, project_estado_actual.md, project_arquitectura.md, y creó feedback_drift_y_dry_run.md y project_taxonomy_audit.md. El ME
+
+**2. Cron instalado en el servidor de desarrollo (VPS), no en Render** — El cron semanal fue instalado via 'crontab' en el VPS local donde corre el agente (/root). Sin embargo, el servicio de producción corre en Render (srv-d70lsh9aae7s739d8lo0). Render tiene sus propios c
+
+**3. Excelente freno antes de borrar número telefónico de producción** — Cuando Juan pidió revisar el número +17867430129, el agente no ejecutó el DELETE inmediatamente. Primero investigó qué número tenía qué provider y qué assistant. Encontró una inconsistencia (el número
+
+### ✅ Lo que SÍ hiciste bien hoy
+
+- Incidente de Telegram manejado con transparencia total: el agente no escondió que había mandado datos falsos a Juan, mandó corrección inmediata, diagnosticó el root cause (sin VapiFetchError + sin dry-run), implementó la defensa técnica (retry exponencial + VapiFetchError), y lo documentó en memoria persistente como lección aprendida. Eso es exactamente cómo un agente maduro maneja sus propios errores.
+- 14 commits verificables en menos de 9 horas, todos con mensajes descriptivos, todos con tests locales antes del push, y CI verde verificado explícitamente para cada push relevante. La disciplina de no declarar 'completo' sin verificar el CI run ID específico (24416180874, 24423833457) es exactamente el nivel de evidencia que se espera.
+- El drift detector (check_prompt_drift.py) fue construido directamente como respuesta al error real que encontró (P-002: repo y Vapi divergían silenciosamente por días). No es tooling por el gusto del tooling — resuelve un problema concreto que dolió hoy. Y lo integró al cron para que corra automáticamente antes de cada audit, no como script manual que nadie recuerda ejecutar.
+
+### 🔍 A vigilar para próxima auditoría
+Verificar con evidencia específica: (1) ¿El ítem '#5 Twilio voice_url restaurado' tiene un API call documentado o fue declarado sin evidencia? (2) Confirmar que los 4 contactIds usados para verificar SMS de LHR (P-004) pertenecen a bookings del calendario LHR y no de Botox — riesgo real de cross-contamination dado el anti-pattern GHL documentado en el ecosistema. (3) Revisar si el cron del VPS duplica o interfiere con los cron jobs de Render (aria-weekly-report). Estos 3 puntos tienen el mayor potencial de impactar a Juan silenciosamente antes del lunes 20 abril.
+
+
+---
+## Tu reporte de regreso (cuando termines)
+
+_Pendiente_
+
+---
+
 ## 2026-04-15 (cierre) — Update del ecosistema
 
 Para que tengas contexto completo cuando vuelvas a tu sesión:

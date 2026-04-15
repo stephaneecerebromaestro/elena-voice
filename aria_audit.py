@@ -2703,11 +2703,11 @@ def start_aria_polling(interval_seconds: int = 180):
     t = _threading.Thread(
         target=_aria_polling_loop,
         args=(interval_seconds,),
-        daemon=False,
+        daemon=True,
         name="aria-polling"
     )
     t.start()
-    log.info("ARIA Polling thread iniciado (non-daemon) — intervalo " + str(interval_seconds) + "s")
+    log.info("ARIA Polling thread iniciado (daemon) — intervalo " + str(interval_seconds) + "s")
 
 
 # ============================================================

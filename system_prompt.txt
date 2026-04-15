@@ -1,14 +1,13 @@
 # system_prompt.txt — Elena Voice Botox (LIVE mirror)
 # ════════════════════════════════════════════════════════════
 # FUENTE DE VERDAD: este archivo es un MIRROR del prompt live
-# del assistant de Botox en Vapi. Cualquier edición debe aplicarse
-# vía API de Vapi (script update_vapi_prompt.py o equivalente),
-# no editando este archivo directamente. Sincronizado vía pull
-# desde Vapi API.
+# del assistant de Botox en Vapi. Para cambios en producción
+# usa scripts/update_prompt.py --bot botox. Este archivo se regenera
+# con el header actualizado después de cada publicación.
 #
-# Pulled: 2026-04-14 (post P-001 applied)
+# Pulled: 2026-04-15
 # Assistant ID: 1631c7cf-2914-45f9-bf82-6635cdf00aba (Botox)
-# Content SHA (prompt body): 59b2ca1ebf056147
+# Content SHA (prompt body): 5c951148d5fa7d49
 # First message: "Hola, habla Elena de Laser Place. ¿Cómo estás?"
 # ════════════════════════════════════════════════════════════
 
@@ -227,4 +226,3 @@ Esta es la ÚNICA fuente de verdad para el uso de herramientas.
 - Zonas: Frente, entrecejo, patas de gallo, masetero.
 - Cuidados post: 24h ejercicio, 4h maquillaje, no tocar, evitar calor, no acostarse 4h.
 - Contraindicaciones: No apto para embarazadas o en lactancia.
-

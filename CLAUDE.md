@@ -1,5 +1,5 @@
 # CLAUDE.md — Elena Voice · Agente de Voz multi-tratamiento
-# Laser Place Miami · Creado: 2026-04-11 · Actualizado: 2026-04-12 (v2)
+# Laser Place Miami · Creado: 2026-04-11 · Actualizado: 2026-04-15 (v3)
 # ════════════════════════════════════════════════════════════
 
 ## IDENTIDAD — TU ERES ELENA VOICE (NO ERES STEPHANEE, NO ERES ELENA CHAT)
@@ -188,37 +188,75 @@ TWILIO_AUTH_TOKEN         # Auth token de Twilio
 
 ---
 
-## REFACTOR PENDIENTE — MULTI-TRATAMIENTO (T16)
+## MULTI-TRATAMIENTO (T16) — ✅ CERRADO
 
-El codigo actual (app.py, ~2355 lineas) esta hardcodeado para Botox:
-- Un solo CALENDAR_ID global
-- Un solo VAPI_ASSISTANT_ID global
-- Un solo BOOKING_TITLE global
+`config.py` mapea `assistantId` → `{calendar_id, pipeline_id, booking_title}`.
+`app.py` usa thread-local config via `set_active_config()` / `get_active_calendar_id()`.
+Fallback a Botox para assistantId desconocido.
 
-### Plan de refactor:
-1. Crear `config.py` con dict de assistants:
-   ```python
-   ASSISTANTS = {
-       "1631c7cf-2914-45f9-bf82-6635cdf00aba": {  # Botox
-           "name": "Elena Voice - Botox",
-           "calendar_id": "hYHvVwjKPykvcPkrsQWT",
-           "pipeline_id": "jiLGCWy0CEsa0iAmmMWT",
-           "booking_title": "Evaluacion Botox — Elena Voice"
-       },
-       # Nuevos assistants aqui
-   }
-   ```
-2. En `vapi_server_url()`: extraer `assistantId` del payload → cargar config
-3. Cada handler recibe `bot_config` en vez de globals
-4. ARIA usa el assistant name para reportes
-
-### Como agregar un nuevo tratamiento (post-refactor):
+### Como agregar un nuevo tratamiento:
 1. Crear assistant en Vapi con el prompt del tratamiento
-2. Agregar entrada en config.py con assistant_id → calendar, pipeline
-3. Configurar GHL workflow que dispare la llamada
-4. Push + deploy
-5. Test end-to-end
+2. Agregar entrada en `config.py` con assistant_id → calendar, pipeline
+3. Juan configura calendario, pipeline y workflow en GHL
+4. Comprar numero Twilio dedicado
+5. Push + deploy (auto-deploy en Render)
+6. Test end-to-end
 **Total: ~30 min por tratamiento nuevo**
+
+---
+
+## SCRIPTS DE MANTENIMIENTO
+
+| Script | Funcion | Uso |
+|--------|---------|-----|
+| `scripts/audit_continuous.py` | Auditoria semanal: metricas por assistant, top razones no_agendo, loops, comparacion vs semana anterior | `python3 scripts/audit_continuous.py --dry-run` |
+| `scripts/run_weekly_audit.sh` | Wrapper de cron que carga env y ejecuta audit_continuous | Cron: lunes 8:15am Miami (CRON_TZ=America/New_York) |
+| `scripts/check_prompt_drift.py` | Compara mirrors del repo vs prompt live en Vapi. Exit 1 si hay drift | `python3 scripts/check_prompt_drift.py` |
+| `scripts/update_prompt.py` | Pipeline canonico para publicar prompts a Vapi + regenerar mirror | `python3 scripts/update_prompt.py --bot botox --dry-run` |
+
+**Env del cron:** `/etc/elena-voice/env` (permisos 600, mirror de Render env vars).
+**Logs:** `/root/.claude/logs/elena-voice-audit.log`
+**Reportes:** `audits/YYYY-MM-DD-weekly.md` + resumen a Telegram.
+
+---
+
+## TOOLING DE PROMPTS
+
+Los archivos `system_prompt.txt` y `system_prompt_lhr.txt` son **mirrors** del prompt live en Vapi.
+Editarlos directamente NO propaga a produccion.
+
+**Flujo correcto para cambiar un prompt:**
+1. Editar el archivo `.txt` del repo
+2. `python3 scripts/update_prompt.py --bot botox --dry-run` (revisar diff)
+3. `python3 scripts/update_prompt.py --bot botox` (publica a Vapi + regenera mirror con header)
+4. Verificar con `python3 scripts/check_prompt_drift.py`
+5. Commit + push
+
+**Protecciones:**
+- `.githooks/pre-commit` bloquea commits que editen el body de los mirrors sin pasar por `update_prompt.py`
+- El cron del lunes ejecuta `check_prompt_drift.py` antes de la auditoria
+
+**Propuestas de mejora de prompts:** `PROMPT_PROPOSALS.md` — ciclo quincenal, requieren aprobacion de Juan antes de aplicar.
+
+---
+
+## CI/CD (T19) — ✅ CERRADO
+
+3 capas de proteccion:
+
+| Capa | Mecanismo | Detalle |
+|------|-----------|---------|
+| 1 | `.githooks/pre-push` | Bloquea push si tests fallan. Bypass: `git push --no-verify` |
+| 2 | GitHub Actions `.github/workflows/ci.yml` | Push + PR a main. Python 3.12 + tests |
+| 3 | Branch protection en main | Required check: "Lint and test". El agente tiene bypass de admin y trabaja directo en main — la proteccion aplica a PRs externos |
+
+**Tests:** `tests/test_syntax.py`, `tests/test_bots_config.py`, `tests/test_audit_continuous.py`, `tests/test_prompt_drift.py`
+
+---
+
+## INCIDENTS.md — REGISTRO DE OPS SIN COMMIT
+
+`INCIDENTS.md` documenta acciones operacionales que no producen commits (patches via API a Twilio, Vapi, GHL, Render). Sin este archivo, futuras auditorias no tienen forma de saber que paso.
 
 ---
 
@@ -265,7 +303,7 @@ Telegram (@aria_elena_bot), GitHub.
 
 ---
 
-## ANTI-PATTERNS (reglas del ecosistema)
+## ANTI-PATTERNS Y REGLAS HARD
 
 - **Nunca** proponer sub-locations GHL por tratamiento — Juan lo rechaza categoricamente
 - **Nunca** proponer un servidor Render por assistant — un servidor, N assistants
@@ -273,6 +311,9 @@ Telegram (@aria_elena_bot), GitHub.
 - **Nunca** cambiar la voz de Sofia sin aprobacion de Juan
 - **Nunca** declarar algo arreglado sin evidencia (log de llamada, transcript, etc.)
 - **Nunca** hacer mas de 3 intentos en el mismo problema — escalar
+- **Nunca** editar `system_prompt*.txt` y commitear sin pasar por `update_prompt.py`
+- **REGLA HARD: `--dry-run` SIEMPRE** antes de ejecutar scripts nuevos que disparen Telegram, GHL o Vapi en produccion. No existe emergencia que justifique saltarse esto. (Incidente 2026-04-14: Vapi 503 → reporte falso de "0 llamadas" enviado a Juan en Telegram)
+- **Verificar Vapi LIVE** antes de declarar un fix de prompt aplicado. Usar `check_prompt_drift.py` o curl directo al GET del assistant
 
 ---
 
@@ -285,9 +326,11 @@ Telegram (@aria_elena_bot), GitHub.
 | 2026-04-10 | Repo renombrado a elena-voice. Registrada en Supabase maestro. |
 | 2026-04-11 | CLAUDE.md v1 creado. Fase D parcial. |
 | 2026-04-12 | CLAUDE.md v2 — identidad explicita, plan refactor multi-tratamiento |
+| 2026-04-13 | Auditoria 898 llamadas Botox. Fixes de prompt aplicados a ambos assistants. |
+| 2026-04-14 | T16 cerrado. T19 CI/CD cerrado. audit_continuous + cron semanal. Tooling prompts (drift detector + update_prompt + pre-commit). PROMPT_PROPOSALS con P-001/P-002/P-004 aplicados. Rebrand ARIA cosmetico. Incidente Twilio/WhatsApp resuelto. Incidente Telegram falso → safeguards implementados. |
+| 2026-04-15 | CLAUDE.md v3 — refleja todos los entregables. Cron DST corregido. Regla dry-run codificada. |
 
 ---
 
 _Elena Voice — Plataforma de Voz para Laser Place Miami_
-_Ultima actualizacion: 2026-04-12 (v2)_
-_Proximo paso: T16 — refactor multi-tratamiento_
+_Ultima actualizacion: 2026-04-15 (v3)_
