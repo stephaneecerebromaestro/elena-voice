@@ -1,9 +1,9 @@
 # system_prompt.txt — Elena Voice Botox (LIVE mirror)
 # ════════════════════════════════════════════════════════════
 # FUENTE DE VERDAD: este archivo es un MIRROR del prompt live
-# del assistant de Botox en Vapi. Para cambios en producción
-# usa scripts/update_prompt.py --bot botox. Este archivo se regenera
-# con el header actualizado después de cada publicación.
+# del assistant de Botox en Vapi. Cualquier edición debe
+# aplicarse vía API de Vapi (scripts/update_prompt.py), no editando
+# este archivo directamente. Sincronizado vía check_prompt_drift.py --fix.
 #
 # Pulled: 2026-04-15
 # Assistant ID: 1631c7cf-2914-45f9-bf82-6635cdf00aba (Botox)

@@ -51,6 +51,26 @@ MIRRORS = {
         "label": "LHR",
         "path": REPO_ROOT / "system_prompt_lhr.txt",
     },
+    "77392648-047e-4a40-9f8a-4f125f2ed6d6": {
+        "label": "Acné",
+        "path": REPO_ROOT / "system_prompt_acne.txt",
+    },
+    "b6b09524-06da-4bf7-b518-a71b6a1c7d8b": {
+        "label": "Cicatrices",
+        "path": REPO_ROOT / "system_prompt_cicatrices.txt",
+    },
+    "a9494200-af37-485c-b0fb-fb85479b17a7": {
+        "label": "Fillers",
+        "path": REPO_ROOT / "system_prompt_fillers.txt",
+    },
+    "39bd6450-055e-4839-9c27-6522e08e8423": {
+        "label": "Bioestimuladores",
+        "path": REPO_ROOT / "system_prompt_radiesse.txt",
+    },
+    "65b3a4b0-2e08-471f-af56-e091e47f26bd": {
+        "label": "Rejuvenecimiento",
+        "path": REPO_ROOT / "system_prompt_rejuvenecimiento.txt",
+    },
 }
 
 

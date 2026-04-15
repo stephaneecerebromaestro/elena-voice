@@ -1,10 +1,11 @@
 # system_prompt_lhr.txt — Elena Voice LHR (LIVE mirror)
 # ════════════════════════════════════════════════════════════
 # FUENTE DE VERDAD: este archivo es un MIRROR del prompt live
-# del assistant de LHR en Vapi. Cualquier edición debe aplicarse
-# vía API de Vapi, no editando este archivo directamente.
+# del assistant de LHR en Vapi. Cualquier edición debe
+# aplicarse vía API de Vapi (scripts/update_prompt.py), no editando
+# este archivo directamente. Sincronizado vía check_prompt_drift.py --fix.
 #
-# Pulled: 2026-04-14 (post P-004 applied)
+# Pulled: 2026-04-15
 # Assistant ID: 3d5b77b5-f36c-4b95-88bc-4d6484277380 (LHR)
 # Content SHA (prompt body): 15875198debb0f9d
 # First message: "Hola, habla Elena de Laser Place. ¿Cómo estás?"
@@ -253,4 +254,3 @@ Esta es la ÚNICA fuente de verdad para el uso de herramientas.
 - Especialista: Laury (12+ años, 34+ certificaciones)
 - Director Clínico: Dr. Gonzalo Mosquera (solo si preguntan)
 - Promo abril: 2 sesiones gratis con paquete 6+
-

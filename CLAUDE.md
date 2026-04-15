@@ -98,11 +98,11 @@ GHL Workflow (trigger: nuevo lead, tag, etc.)
 |-----------|------------|---------|-------------|-------------|--------|
 | Elena - Laser Place Miami | Botox | 1631c7cf-2914-45f9-bf82-6635cdf00aba | hYHvVwjKPykvcPkrsQWT | jiLGCWy0CEsa0iAmmMWT | ACTIVO |
 | Elena Voice - LHR | Laser Hair Removal | 3d5b77b5-f36c-4b95-88bc-4d6484277380 | gQclGhEhZ2K1NkLal7pt | fyieKv1fpjRGJXfRZKT2 | CREADO 2026-04-13, pendiente test real |
-| (pendiente) | Fillers | — | (pedir a Juan) | (pedir a Juan) | POR CREAR |
-| (pendiente) | Bioestimuladores | — | (pedir a Juan) | (pedir a Juan) | POR CREAR |
-| (pendiente) | Acne | — | (pedir a Juan) | (pedir a Juan) | POR CREAR |
-| (pendiente) | MatrixPro | — | (pedir a Juan) | (pedir a Juan) | POR CREAR |
-| (pendiente) | Cicatrices | — | (pedir a Juan) | (pedir a Juan) | POR CREAR |
+| (pendiente) | Acne (ClearConfidence) | — | (pedir a Juan) | (pedir a Juan) | Twilio +19546136159, voice pendiente |
+| (pendiente) | Cicatrices (ScarlessBody) | — | (pedir a Juan) | (pedir a Juan) | Twilio +17864086920, voice pendiente |
+| (pendiente) | Fillers | — | (pedir a Juan) | (pedir a Juan) | Twilio +17868820360, voice pendiente |
+| (pendiente) | Bioestimuladores (Radiesse) | — | (pedir a Juan) | (pedir a Juan) | Twilio +17864756315, voice pendiente |
+| (pendiente) | Rejuvenecimiento (LuxeGlow) | — | (pedir a Juan) | (pedir a Juan) | Twilio +17867418014, voice pendiente |
 
 ---
 

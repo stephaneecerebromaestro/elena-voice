@@ -35,14 +35,50 @@ ASSISTANTS = {
         "booking_title": "Evaluación Laser Hair Removal - Laser Place Miami",
     },
 
-    # ─── Nuevos tratamientos van aqui ───
-    # "VAPI_ID": {
-    #     "name": "Elena Voice - Fillers",
-    #     "treatment": "fillers",
-    #     "calendar_id": "(pedir a Juan)",
-    #     "pipeline_id": "(pedir a Juan)",
-    #     "booking_title": "Evaluación Fillers - Laser Place Miami",
-    # },
+    # ─── ACNÉ (creado 2026-04-15) ───
+    "77392648-047e-4a40-9f8a-4f125f2ed6d6": {
+        "name": "Elena Voice - Acné",
+        "treatment": "acne",
+        "calendar_id": "L83X5HSAsWjwZUCblLqm",
+        "pipeline_id": "zHEfAknfdfzkqXC9seg3",
+        "booking_title": "Evaluación Acné — Elena Voice",
+    },
+
+    # ─── CICATRICES (creado 2026-04-15) ───
+    "b6b09524-06da-4bf7-b518-a71b6a1c7d8b": {
+        "name": "Elena Voice - Cicatrices",
+        "treatment": "cicatrices",
+        "calendar_id": "innp3I6K8ljcuecoLdPI",
+        "pipeline_id": "sxBQVVTrcg4UBA2hIkE7",
+        "booking_title": "Evaluación Cicatrices — Elena Voice",
+    },
+
+    # ─── FILLERS (creado 2026-04-15) ───
+    "a9494200-af37-485c-b0fb-fb85479b17a7": {
+        "name": "Elena Voice - Fillers",
+        "treatment": "fillers",
+        "calendar_id": "WS6XZZAz8ModQXzujkrz",
+        "pipeline_id": "wnD72CQDp6WHWWucPhns",
+        "booking_title": "Evaluación Fillers — Elena Voice",
+    },
+
+    # ─── BIOESTIMULADORES / RADIESSE (creado 2026-04-15) ───
+    "39bd6450-055e-4839-9c27-6522e08e8423": {
+        "name": "Elena Voice - Bioestimuladores",
+        "treatment": "radiesse",
+        "calendar_id": "OfFAX4YqVIpTVrslMMx6",
+        "pipeline_id": "0nOwProhhs9S3R6Sflk3",
+        "booking_title": "Evaluación Bioestimuladores — Elena Voice",
+    },
+
+    # ─── REJUVENECIMIENTO / LUXEGLOW (creado 2026-04-15) ───
+    "65b3a4b0-2e08-471f-af56-e091e47f26bd": {
+        "name": "Elena Voice - Rejuvenecimiento",
+        "treatment": "rejuvenecimiento",
+        "calendar_id": "jnyBASqRZHiuFYs3vCBR",
+        "pipeline_id": "TcG7U1NxywQLteETRzbo",
+        "booking_title": "Evaluación Rejuvenecimiento — Elena Voice",
+    },
 }
 
 
