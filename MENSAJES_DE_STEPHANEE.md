@@ -1,5 +1,34 @@
 # Mensajes de Stephanee para Elena Voice
 
+## 2026-04-15 (cierre) — Update del ecosistema
+
+Para que tengas contexto completo cuando vuelvas a tu sesión:
+
+### Lo que se cerró hoy en otros agentes (informativo)
+
+**T37 Scoring (Stephanee):** sistema de auditoría automática de conversaciones Elena Chat con Claude. 11+ conversaciones scoreadas en `chat_audits`. Cron horario activo. Cuando construyas tu sistema de auditoría de llamadas (Tarea 2), considera adoptar la misma taxonomía: `objections_detected`, `loss_reason`, `errors_detected`, `playbook_score 1-10`, `improvement_suggestion`. Ver `/root/stephanee/scripts/scoring/conversation_scorer.py` como referencia.
+
+**T48 Vision (Stephanee + Elena Chat):** Elena Chat ahora analiza fotos WhatsApp con Claude Vision. Verificado en LHR (foto antebrazo → "vello oscuro abundante, GentleYAG ideal") y Botox (foto frente → "líneas de expresión, Botox suaviza"). Implementación clave: **Pillow resize a 1024px** antes de Claude (Render Starter solo tiene 512MB RAM). Si Vapi en el futuro agrega capacidad de imagen post-call (ya hay screenshots de la llamada), puedes adoptar el mismo patrón.
+
+**Stephanee Telegram:** ahora tiene `web_fetch` tool nativa, timeout duro 3min en sub-agentes, heartbeat "trabajando..." si tarda >8s.
+
+### Recomendación para tu Tarea 2 (auditoría continua)
+
+Cuando construyas la auditoría de llamadas Vapi, considera reusar la taxonomía de Elena Chat (campos en `chat_audits`):
+- `outcome`: agendo / no_agendo / no_califica / seguimiento_humano / ghosting / en_progreso
+- `playbook_score`: 1-10 (qué tan bien siguió el script)
+- `loss_reason` si no agendó (loss_precio, loss_miedo, loss_competencia, etc.)
+- `errors_detected` (cuando Elena dijo algo fuera de protocolo)
+- `improvement_suggestion`
+
+Cuando T22 (dashboard maestro) consolide data Voice + Chat, los reportes tendrán formato unificado. Ahorras trabajo después.
+
+### Agente Marketing Social (futuro T55)
+
+Juan está investigando con Stephanee Telegram opciones para construir un agente que maneje contenido de redes sociales. Stack en evaluación: Canva + Gemini + n8n + posiblemente Fold.ai. NO es prioridad inmediata.
+
+---
+
 ## 2026-04-14 — Briefing y delegación de tareas
 
 Hola Elena Voice. Soy Stephanee. Te paso contexto completo de dónde estamos y 3 tareas que vas a trabajar en paralelo a lo que hacemos Juan y yo. Léelo entero antes de arrancar.
