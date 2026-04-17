@@ -262,9 +262,36 @@ Custom field es escrito por el `app.py` de Elena Voice tras cada llamada con val
 
 ### Rama: Llamar Luego (en construcción · 2026-04-17)
 
-**Lógica de negocio:** el paciente contestó la llamada pero pidió/sugirió ser contactado más tarde. Elena Voice escribió `elena_last_outcome=llamar_luego` y además `elena_callback_hours` (2 / 4 / 12 / 120 = 5 días) según lo que el paciente dijo. Esta rama mueve la oportunidad al stage `Llamar Luego`, manda WA de confirmación, espera el tiempo dinámico, y dispara la Llamada 2.
+**Lógica de negocio:** el paciente contestó la llamada pero pidió/sugirió ser contactado más tarde. Elena Voice escribió `elena_last_outcome=llamar_luego` y además `elena_callback_hours` (2 / 4 / 12 / 120 = 5 días) según lo que el paciente dijo. Esta rama mueve la oportunidad al stage `Llamar Luego`, manda WA contextual (Mejora 5), espera el tiempo dinámico, y dispara la Llamada 2.
 
-**Por qué es la rama más importante para Mejora 5:** el nodo `WA - Llamar Luego` de aquí es exactamente el que se reemplazará por `Custom Webhook → Elena Chat` para generar mensaje contextual basado en lo que pasó en la llamada. Por ahora se configura estático (igual que Botox) para validar el flujo end-to-end antes de meter el LLM.
+**Por qué esta rama es la implementación de Mejora 5 en Acné:**
+El nodo `WA - Llamar Luego` aquí NO es un mensaje estático único. Es la **arquitectura de 2 niveles de fallback** que Juan definió:
+
+```
+[Custom Webhook → Elena Chat]
+        ↓
+   Elena Chat decide internamente:
+   ├─ Gates OK + LLM OK → envía mensaje contextual vía GHL Conversations API
+   ├─ Gates fallan (poco contexto) → envía template estático vía GHL Conversations API
+   └─ Crash/timeout → no responde
+        ↓
+[Condition: webhook success?]
+   ├─ SÍ → continúa
+   └─ NO (timeout/error de Elena Chat) → [WA estático respaldo en GHL]
+        ↓
+[Wait dinámico (elena_callback_hours)]
+        ↓
+[Webhook Llamada 2]
+```
+
+**Por qué 2 niveles:**
+- **Nivel 1 (Elena Chat interno):** decide LLM vs template fallback según hay contexto suficiente. Esto es Mejora 5 propiamente — la inteligencia conversacional.
+- **Nivel 2 (GHL respaldo):** WA estático manual en GHL para el caso edge donde Elena Chat se cae completa. Garantiza que el paciente SIEMPRE recibe un mensaje, aunque haya outage.
+
+**Por qué Elena Chat envía directo (no devuelve texto a GHL para que GHL envíe):**
+- `send_whatsapp_message()` de Elena Chat ya usa GHL Conversations API (no Twilio). El stack es coherente.
+- Reduce latencia de webhook (no espera roundtrip de payload de mensaje).
+- Elena Chat puede registrar contexto del envío (qué template usó, qué LLM generó, qué contexto leyó) en sus propias tablas Supabase para análisis posterior.
 
 #### Sub-acción L.1 — Stage - Llamar Luego (configurada · 2026-04-17)
 - **Tipo:** Create Or Update Opportunity
@@ -277,7 +304,81 @@ Custom field es escrito por el `app.py` de Elena Voice tras cada llamada con val
 - **Por qué solo stage change:** la oportunidad ya existe (creada en ACCIÓN 2), no hay que recrearla. Dejar campos vacíos = "no tocar". Solo el stage se actualiza.
 - **Replicabilidad:** mismo patrón en todos los tratamientos. Cambiar `Pipeline` y `Stage` al equivalente del nuevo tratamiento.
 
-_(Pendiente: Sub-acción L.2 = WA - Llamar Luego, Sub-acción L.3 = Wait dinámico, Sub-acción L.4 = Webhook Llamada 2)_
+#### Sub-acción L.2 — Custom Webhook → Elena Chat (mensaje contextual Mejora 5)
+
+**Configuración GHL:**
+- **Action name:** `Webhook - Elena Chat WA Llamar Luego`
+- **Event:** `CUSTOM`
+- **Method:** `POST`
+- **URL:** `https://elena-lhr.onrender.com/webhook/ghl/followup`
+- **Authorization:** `None` (API key irá en headers)
+- **Headers:**
+  - `Authorization: Bearer <ELENA_CHAT_WEBHOOK_TOKEN>` _(token a generar en Elena Chat — variable env)_
+  - `Content-Type: application/json`
+- **Content-Type:** `application/json`
+- **Raw Body:**
+  ```json
+  {
+    "contact_id": "{{contact.id}}",
+    "treatment": "acne",
+    "outcome": "llamar_luego",
+    "callback_hours": "{{contact.elena_callback_hours}}",
+    "patient_name": "{{contact.first_name}}",
+    "phone": "{{contact.phone}}",
+    "transcript_summary": "{{contact.elena_call_summary}}",
+    "node_context": "wa_llamar_luego_post_llamada_1"
+  }
+  ```
+
+**Por qué cada campo del body:**
+- `contact_id`: Elena Chat lo usa para enviar el WA vía Conversations API GHL.
+- `treatment`: routing interno en Elena Chat (qué bot/prompt usar).
+- `outcome`: contexto crítico (paciente pidió ser llamado luego — el mensaje debe alinearse con eso).
+- `callback_hours`: cuándo será el próximo intento, para que el mensaje pueda referenciar el timing ("te marco en X horas" si aplica).
+- `patient_name`: personalización rápida sin tener que ir a GHL a leer.
+- `phone`: redundante pero útil para logs/debug en Elena Chat.
+- `transcript_summary`: resumen escrito por Elena Voice tras la llamada (custom field). ESTE es el contexto principal que el LLM usa para generar mensaje no-genérico.
+- `node_context`: identifica desde qué nodo del workflow se llamó (para que Elena Chat pueda diferenciar "post-llamada-1-llamar-luego" vs "post-llamada-2-no-contesto" si en el futuro se reutiliza el endpoint).
+
+**Branches del Custom Webhook (GHL nativo):**
+- **Success branch:** continúa al Wait dinámico (Sub-acción L.4).
+- **Failed branch:** ejecuta WA estático de respaldo (Sub-acción L.3).
+
+**Replicabilidad para otra rama (ej. No Contestó) o tratamiento:**
+- Cambiar `outcome` y `node_context`.
+- Cambiar `treatment` para otro tratamiento.
+- URL, headers, estructura — TODO igual.
+
+#### Sub-acción L.3 — WA estático de respaldo (solo se ejecuta si Custom Webhook falla)
+
+**Configuración GHL:**
+- **Acción:** Send WhatsApp
+- **Action name:** `WA - Llamar Luego (RESPALDO)`
+- **Template:** `None - Free form message`
+- **From phone number:** `+1 954-613-6159`
+- **Mensaje:**
+  ```
+  Hola {{contact.first_name}}, te contacto más tarde como acordamos 😊
+
+  Cualquier cosa que necesites, escríbeme por aquí.
+  ```
+
+**Por qué este mensaje (estático mínimo):**
+- Es el ÚLTIMO recurso — solo se ejecuta si Elena Chat se cayó completa (raro). En condiciones normales, el paciente recibe un mensaje contextual generado por LLM o un template inteligente que Elena Chat eligió internamente.
+- Genérico pero coherente con la promesa de la llamada ("te llamo más tarde").
+- Sin referencias específicas a tiempo (no sabemos `callback_hours` aquí — eso lo manejaría Elena Chat con su template estático interno que sí tiene acceso al campo).
+
+**Conexión:** este nodo solo se conecta al **Failed branch** del Custom Webhook anterior. Si el webhook tuvo éxito, este nodo NO se ejecuta.
+
+**Replicabilidad:** mantener mensaje genérico de respaldo por nodo (Llamar Luego, No Contestó, etc.). Es seguro asumir que cuando este se ejecuta, Elena Chat está caída — por eso debe ser independiente de cualquier custom field complejo.
+
+#### Sub-acción L.4 — Wait dinámico (`elena_callback_hours`)
+
+_(pendiente — se documenta al configurar)_
+
+#### Sub-acción L.5 — Webhook Llamada 2
+
+_(pendiente — se documenta al configurar)_
 
 ---
 
