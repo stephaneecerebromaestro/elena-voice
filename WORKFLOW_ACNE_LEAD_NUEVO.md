@@ -428,4 +428,54 @@ Eliminada conceptualmente — el flujo Llamar Luego cierra con el Go To → Llam
 - **Lógica de negocio (palabras de Juan):** el paciente dejó saber explícitamente que no quiere ser contactado, que no le interesa el servicio, o pidió no recibir más llamadas. **Decisión consciente y verbalizada del lead.**
 - **Por qué stage propio:** queda registrado como "no contactar" — el equipo NO debe insistir, y el contacto debe excluirse de futuras campañas (audiencias FB, broadcasts, otros workflows). Diferente de `No Agendó` que sí tiene reintento humano.
 
-_(Pendientes de configurar: rama Llamar Luego, rama No Contestó, rama None.)_
+### Rama: No Contestó (configurada · 2026-04-17)
+
+**Lógica de negocio:** el paciente no contestó la llamada (timeout, voicemail, ocupado). Diferente de Llamar Luego (paciente sí contestó pero pidió diferir).
+
+**Estructura final:**
+```
+[Stage - Llamada 1]                   ← stage del pipeline (1ª llamada hecha)
+[Custom Webhook → Elena Chat]          ← Mejora 5: WA contextual o fallback
+[Wait 4h con 2 sub-branches]
+   ├─ Contact Reply → Webhook Llamada 2
+   └─ Time Out      → Webhook Llamada 2
+```
+
+#### Sub-acción NC.1 — Stage - Llamada 1 (heredado del clon)
+- Pipeline: `Leads Nuevos - Acne`
+- Stage: `Llamada 1` (representa "1 llamada hecha" — el paciente no contestó la primera)
+
+#### Sub-acción NC.2 — Custom Webhook → Elena Chat (Mejora 5)
+Misma config que Sub-acción L.2 de Llamar Luego, **diferencias en body:**
+- `outcome`: `"no_contesto"` (en lugar de `"llamar_luego"`)
+- `intento_numero`: `"1"` (reemplaza a `callback_hours` — Elena Chat lo usa para variar tono según número de intento)
+- `node_context`: `"wa_no_contesto_1_post_llamada_1"`
+
+Body completo:
+```json
+{
+  "contact_id": "{{contact.id}}",
+  "treatment": "acne",
+  "outcome": "no_contesto",
+  "intento_numero": "1",
+  "patient_name": "{{contact.first_name}}",
+  "phone": "{{contact.phone}}",
+  "transcript_summary": "{{contact.elena_summary}}",
+  "node_context": "wa_no_contesto_1_post_llamada_1"
+}
+```
+
+URL, headers, Authorization, Method = idénticos al webhook de Llamar Luego.
+
+#### Sub-acción NC.3 — Wait 4h con 2 sub-branches (heredado del clon)
+- **Contact Reply branch:** se dispara si el paciente responde al WA dentro de 4h. → Webhook Llamada 2.
+- **Time Out branch:** se dispara si pasaron 4h sin respuesta. → Webhook Llamada 2.
+
+Ambas convergen al mismo destino. La diferencia se registra en GHL (Contact Reply queda registrado como interacción inbound del paciente, útil para reportes).
+
+**Por qué ambos van a Llamada 2 (no loop a Llamada 1 como Llamar Luego):**
+En Llamar Luego el paciente sí contestó y pidió posponer → se reusa Llamada 1 como reintento del mismo nivel. En No Contestó NO hubo conversación → escala al siguiente intento (Llamada 2) con prompt potencialmente diferente o tono distinto. Es escalación, no reintento horizontal.
+
+---
+
+_(Pendiente de configurar: rama None — fallback de seguridad cuando ninguna condición se cumple.)_
