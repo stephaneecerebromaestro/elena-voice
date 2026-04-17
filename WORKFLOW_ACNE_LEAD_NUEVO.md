@@ -371,13 +371,34 @@ El nodo `WA - Llamar Luego` aquí NO es un mensaje estático único. Es la **arq
 
 **Opcional (no implementado por ahora):** GHL ofrece checkbox **"Save response from this Webhook"** que captura la respuesta del webhook en custom values. Si en el futuro queremos branching basado en lo que Elena Chat respondió (ej: tomar acciones distintas según `source: "llm" | "fallback"`), se activa esa checkbox y luego se agrega un Condition que lee la respuesta. **Por ahora no es necesario** porque Elena Chat maneja su lógica internamente.
 
-#### Sub-acción L.4 — Wait dinámico (`elena_callback_hours`)
+#### Sub-acción L.4 — Condition de horas + Wait dinámico + Go To loop (configurada · 2026-04-17, heredada del clon Botox)
 
-_(pendiente — se documenta al configurar)_
+**Tipo:** Condition con 5 branches que leen `elena_callback_hours`, cada branch ejecuta su Wait correspondiente y luego un Go To que vuelve al **Webhook Llamada 1** (ACCIÓN 7 del workflow).
 
-#### Sub-acción L.5 — Webhook Llamada 2
+**Configuración GHL:**
 
-_(pendiente — se documenta al configurar)_
+| Branch | Condición | Wait | Go To destino |
+|--------|-----------|------|---------------|
+| Llamar en 2h | `elena_callback_hours` IS `2` | 2 horas | Webhook Llamada 1 |
+| Llamar en 4h | `elena_callback_hours` IS `4` | 4 horas | Webhook Llamada 1 |
+| Llamar en 12h | `elena_callback_hours` IS `12` | 12 horas | Webhook Llamada 1 |
+| Llamar en 5d | `elena_callback_hours` IS `120` | 5 días (120h) | Webhook Llamada 1 |
+| None | (ninguna se cumple) | — | Webhook Llamada 1 (con wait default) |
+
+**Por qué loop a Llamada 1 (no Llamada 2):**
+Conceptualmente es un **reintento** del mismo paciente. Vapi mantiene contexto de llamadas anteriores en transcripts asociados al `customer.number`, así que Elena Voice cuando vuelve a marcar sabe que ya habló antes con el paciente. No hace falta tener un nodo `Webhook Llamada 2` separado — sería duplicación. El bucle Llamar Luego → Wait → Llamada 1 puede repetirse N veces hasta que el outcome cambie (paciente agenda, rechaza, error, etc.) y la Condition 1 lo rutee a otra rama.
+
+**Por qué los valores son 2 / 4 / 12 / 120:**
+Taxonomía cerrada que Elena Voice usa al escribir `elena_callback_hours` en GHL. Si paciente dice "llámame en una hora" → mapea a `2`. "Mañana" → `12` (siguiente día laboral). "La próxima semana" → `120`. Mantener taxonomía cerrada evita que Elena Voice escriba valores arbitrarios que el Condition no sabría rutear.
+
+**Por qué la rama None existe y va al mismo Llamada 1:**
+Si por bug Elena Voice escribiera un valor fuera de la taxonomía (ej: `48`), el flujo no se queda atascado — cae en None y reintenta. Es failsafe.
+
+**Replicabilidad:** estas branches y valores son universales para todos los tratamientos. NO se cambia nada al replicar a otro tratamiento. La taxonomía `2/4/12/120` la mantiene Elena Voice global.
+
+#### Sub-acción L.5 — (no existe)
+
+Eliminada conceptualmente — el flujo Llamar Luego cierra con el Go To → Llamada 1 (loop). No hay un "Webhook Llamada 2" separado.
 
 ---
 
