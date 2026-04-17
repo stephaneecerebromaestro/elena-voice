@@ -963,10 +963,12 @@ def _process_end_of_call(message):
     - no_contesto → call < 20s, voicemail, no-answer, or silence with no user speech
     - no_agendo   → user spoke but did not book (hung up, dropped, rejected)
 
-    Workflow trigger: adds generic tag 'elena_resultado_botox' AFTER writing all
-    custom fields. The GHL workflow reads elena_last_outcome (not the tag) to
-    decide which branch to take. The workflow removes the tag at the end of each
-    branch so it can re-trigger on the next call.
+    Workflow trigger: adds per-treatment tag 'elena_resultado_<treatment>' AFTER
+    writing all custom fields (e.g., elena_resultado_botox, elena_resultado_acne).
+    Treatment is resolved from the call's assistantId via config.ASSISTANTS. The
+    GHL Procesador workflow per treatment reads elena_last_outcome (not the tag)
+    to decide which branch to take. Each Procesador workflow removes its own tag
+    at the end of each branch so it can re-trigger on the next call.
 
     Also stores call metadata as custom fields and full transcript as a GHL note.
     """
@@ -1570,14 +1572,16 @@ def _process_end_of_call(message):
             except Exception as _counter_err:
                 print(f"[WARN] Counter update failed: {_counter_err}")
 
-            # Step 4b: Write elena_last_outcome custom field, then add generic trigger tag.
+            # Step 4b: Write elena_last_outcome custom field, then add per-treatment trigger tag.
             # ARCHITECTURE: elena_last_outcome is the source of truth (single value, no accumulation).
-            # elena_resultado_botox is a generic tag used only to fire the GHL workflow trigger.
-            # The workflow reads elena_last_outcome (not the tag) to decide which branch to take.
-            # The workflow removes elena_resultado_botox at the end of each branch so it can
-            # re-trigger on the next call.
+            # elena_resultado_<treatment> is a per-treatment tag that fires the corresponding
+            # GHL Procesador workflow (elena_resultado_botox → workflow Botox, elena_resultado_acne
+            # → workflow Acne, etc.). Each Procesador workflow removes its own tag at the end of
+            # its branch so it can re-trigger on the next call. The Lead Nuevo workflow reads
+            # elena_last_outcome (not the tag) to decide which branch to take.
             _update_contact_custom_field(contact_id, "elena_last_outcome", outcome)
-            _add_tag_to_contact(contact_id, "elena_resultado_botox")
+            _treatment = get_assistant_config(_eoc_assistant_id).get("treatment", "botox")
+            _add_tag_to_contact(contact_id, f"elena_resultado_{_treatment}")
             # Save full transcript as a note on the GHL contact
             # This allows team members to read the full conversation from GHL
             if transcript:
