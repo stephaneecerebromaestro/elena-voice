@@ -12,6 +12,43 @@
 # Estado: Draft (en construcción · 2026-04-17)
 # ════════════════════════════════════════════════════════════
 
+## ⚠️ DECISIÓN ARQUITECTÓNICA CRÍTICA (2026-04-18)
+
+**Plan original de Mejora 5 (mensaje WA contextual generado por LLM en cada
+nodo post-llamada): RETIRADO** del workflow Lead Nuevo.
+
+**Razón técnica:** Meta WhatsApp Business API NO permite enviar mensajes libres
+proactivos. Solo permite:
+- Templates pre-aprobados de tipo `Utility` o `Authentication` (sin contexto del
+  contacto — solo variables predefinidas)
+- Mensajes libres SOLO dentro de la ventana de 24h después de que el contacto
+  responda a un mensaje previo
+
+Esto aplica a TODOS los providers (GHL, Twilio, 360dialog, etc.) porque todos
+pasan por la WABA architecture controlada por Meta. Templates de Marketing a
+números US adicionalmente bloqueados desde abril 2025.
+
+**Plan ACTUAL del workflow Lead Nuevo:**
+1. Workflow envía templates Utility estáticos (`WA - Llamar luego`,
+   `WA - No contesto N`) usando la acción nativa Send WhatsApp de GHL con su
+   FROM number propio.
+2. Cuando el paciente responde al WA → se abre ventana 24h → recién ahí Elena
+   Chat (vía workflow Inbound separado) puede usar LLM con conversación libre.
+
+**Lo que QUEDA preparado para futuro Mejora 5:**
+- Endpoint `/webhook/ghl/followup` en Elena Chat (`elena-lhr` repo)
+- Módulos `followup.py` + `followup_fallbacks.py` + auth Bearer
+- Token registrado en GHL como custom value `Authorization Key`
+- Env var `ELENA_CHAT_WEBHOOK_TOKEN` en Render
+
+**Cuándo se activará Mejora 5:**
+Cuando Juan cree templates Utility con variables que LLM puede rellenar
+(ej: `acne_llamar_luego_2h` con variable `{{1}}` = nombre paciente). En esa
+versión LLM no genera texto libre — elige template + rellena variables. Es
+"Mejora 5 light" pero compatible con restricciones Meta.
+
+═══════════════════════════════════════════════════════════════════════════════
+
 ## Visión general del flujo
 
 Este workflow se dispara cuando entra un lead nuevo de Acné (Facebook Form)
@@ -260,40 +297,20 @@ Bifurca el flujo según el resultado escrito por Elena Voice + el workflow Proce
 ### Por qué la condition lee `elena_last_outcome` y no un tag
 Custom field es escrito por el `app.py` de Elena Voice tras cada llamada con valor inequívoco (taxonomía cerrada). Tags son aditivos y pueden mezclarse — un mismo contacto puede tener tags de varios tratamientos o estados. Custom field es la fuente de verdad por llamada.
 
-### Rama: Llamar Luego (en construcción · 2026-04-17)
+### Rama: Llamar Luego (configurada · 2026-04-18 — final)
 
-**Lógica de negocio:** el paciente contestó la llamada pero pidió/sugirió ser contactado más tarde. Elena Voice escribió `elena_last_outcome=llamar_luego` y además `elena_callback_hours` (2 / 4 / 12 / 120 = 5 días) según lo que el paciente dijo. Esta rama mueve la oportunidad al stage `Llamar Luego`, manda WA contextual (Mejora 5), espera el tiempo dinámico, y dispara la Llamada 2.
+**Lógica de negocio:** el paciente contestó la llamada pero pidió/sugirió ser contactado más tarde. Elena Voice escribió `elena_last_outcome=llamar_luego` y `elena_callback_hours` (2 / 4 / 12 / 120 = 5 días) según lo que el paciente dijo. Esta rama mueve la oportunidad al stage `Llamar Luego`, manda WA template Utility de confirmación, espera el tiempo dinámico, y vuelve a disparar Llamada 1 (loop).
 
-**Por qué esta rama es la implementación de Mejora 5 en Acné:**
-El nodo `WA - Llamar Luego` aquí NO es un mensaje estático único. Es la **arquitectura de 2 niveles de fallback** que Juan definió:
-
+**Estructura final:**
 ```
-[Custom Webhook → Elena Chat]
-        ↓
-   Elena Chat decide internamente:
-   ├─ Gates OK + LLM OK → envía mensaje contextual vía GHL Conversations API
-   ├─ Gates fallan (poco contexto) → envía template estático vía GHL Conversations API
-   └─ Crash/timeout → no responde
-        ↓
-[Condition: webhook success?]
-   ├─ SÍ → continúa
-   └─ NO (timeout/error de Elena Chat) → [WA estático respaldo en GHL]
-        ↓
-[Wait dinámico (elena_callback_hours)]
-        ↓
-[Webhook Llamada 2]
+[Stage - Llamar Luego]                ← cambia stage en pipeline Acné
+[WA - Llamar luego]                    ← template Utility GHL nativo (heredado del clon Botox)
+[Condition por horas (5 branches)]     ← lee elena_callback_hours
+   ├─ 2h, 4h, 12h, 5d → Wait + Go To → Webhook Llamada 1
+   └─ None → Wait default → Go To → Webhook Llamada 1
 ```
 
-**Por qué 2 niveles:**
-- **Nivel 1 (Elena Chat interno):** decide LLM vs template fallback según hay contexto suficiente. Esto es Mejora 5 propiamente — la inteligencia conversacional.
-- **Nivel 2 (GHL respaldo):** WA estático manual en GHL para el caso edge donde Elena Chat se cae completa. Garantiza que el paciente SIEMPRE recibe un mensaje, aunque haya outage.
-
-**Por qué Elena Chat envía directo (no devuelve texto a GHL para que GHL envíe):**
-- `send_whatsapp_message()` de Elena Chat ya usa GHL Conversations API (no Twilio). El stack es coherente.
-- Reduce latencia de webhook (no espera roundtrip de payload de mensaje).
-- Elena Chat puede registrar contexto del envío (qué template usó, qué LLM generó, qué contexto leyó) en sus propias tablas Supabase para análisis posterior.
-
-#### Sub-acción L.1 — Stage - Llamar Luego (configurada · 2026-04-17)
+#### Sub-acción L.1 — Stage - Llamar Luego
 - **Tipo:** Create Or Update Opportunity
 - **Action name:** `Stage - Llamar Luego`
 - **In Pipeline:** `Leads Nuevos - Acne`
@@ -304,74 +321,29 @@ El nodo `WA - Llamar Luego` aquí NO es un mensaje estático único. Es la **arq
 - **Por qué solo stage change:** la oportunidad ya existe (creada en ACCIÓN 2), no hay que recrearla. Dejar campos vacíos = "no tocar". Solo el stage se actualiza.
 - **Replicabilidad:** mismo patrón en todos los tratamientos. Cambiar `Pipeline` y `Stage` al equivalente del nuevo tratamiento.
 
-#### Sub-acción L.2 — Custom Webhook → Elena Chat (configurada · 2026-04-17)
+#### Sub-acción L.2 — WA - Llamar luego (template Utility, heredado del clon)
 
 **Configuración GHL:**
-- **Action name:** `Webhook - Elena Chat WA Llamar Luego`
-- **Event:** `CUSTOM`
-- **Method:** `POST`
-- **URL:** `https://elena-lhr.onrender.com/webhook/ghl/followup`
-- **Authorization:** `Bearer Token` (selector dropdown de GHL)
-- **Token (Bearer Token):** guardado en GHL como **"Authorization Key"** (custom value reutilizable). Valor del token: `5a9f8d51cd470406d9a453a62111c8fc367872cfe7c0bb71a0148591834fcf81` _(generado con `openssl rand -hex 32` el 2026-04-17, debe registrarse como env var `ELENA_CHAT_WEBHOOK_TOKEN` en Elena Chat para validación)_
-- **Headers:** vacío (Authorization se setea con dropdown, no con header manual)
-- **Content-Type:** `application/json`
-- **Raw Body:**
-  ```json
-  {
-    "contact_id": "{{contact.id}}",
-    "treatment": "acne",
-    "outcome": "llamar_luego",
-    "callback_hours": "{{contact.elena_callback_hours}}",
-    "patient_name": "{{contact.first_name}}",
-    "phone": "{{contact.phone}}",
-    "transcript_summary": "{{contact.elena_summary}}",
-    "node_context": "wa_llamar_luego_post_llamada_1"
-  }
+- **Acción:** Send WhatsApp (acción nativa GHL)
+- **Action name:** `WA - Llamar luego`
+- **Template:** `None - Free form message` (el sistema lo trata como Utility para flujos fuera de ventana 24h — verificado por Juan que GHL maneja esto internamente vía sus templates pre-aprobados)
+- **From phone number:** `+1 954-613-6159` (número WhatsApp Acné)
+- **Enable branches:** OFF
+- **Mensaje (placeholder — Juan lo ajusta en GHL al final):**
+  ```
+  Hola {{contact.first_name}}, te marco más tarde como acordamos 😊
+  Si necesitas algo antes, escríbeme por aquí.
   ```
 
-**⚠️ Notas operativas verificadas en GHL UI:**
-- Las custom values del body deben insertarse con el botón **"Custom Values"** del editor, no escribirse a mano (GHL no las reconoce si son texto plano).
-- El custom field correcto es `contact.elena_summary` (NO `elena_call_summary` — verificado vía GHL API el 2026-04-17 listando customFields del location `hzRj7DV9erP8tnPiTv7D`).
-- El token Bearer se guarda una vez en GHL como custom value reutilizable; en otros nodos webhook (No Contestó, etc.) se selecciona el mismo "Authorization Key" sin tener que repegar.
+**Por qué template estático y no LLM:**
+Restricción de Meta WhatsApp Business — no permite mensajes libres proactivos. Ver "DECISIÓN ARQUITECTÓNICA CRÍTICA" al inicio del doc. Cuando el paciente responda a este mensaje, recién ahí se abre ventana 24h y Elena Chat (workflow Inbound separado) puede conversar libre con LLM.
 
-**Por qué cada campo del body:**
-- `contact_id`: Elena Chat lo usa para enviar el WA vía Conversations API GHL.
-- `treatment`: routing interno en Elena Chat (qué bot/prompt usar).
-- `outcome`: contexto crítico (paciente pidió ser llamado luego — el mensaje debe alinearse con eso).
-- `callback_hours`: cuándo será el próximo intento, para que el mensaje pueda referenciar el timing ("te marco en X horas" si aplica).
-- `patient_name`: personalización rápida sin tener que ir a GHL a leer.
-- `phone`: redundante pero útil para logs/debug en Elena Chat.
-- `transcript_summary`: resumen escrito por Elena Voice tras la llamada (custom field). ESTE es el contexto principal que el LLM usa para generar mensaje no-genérico.
-- `node_context`: identifica desde qué nodo del workflow se llamó (para que Elena Chat pueda diferenciar "post-llamada-1-llamar-luego" vs "post-llamada-2-no-contesto" si en el futuro se reutiliza el endpoint).
+**Por qué el mensaje confirma "te marco más tarde" sin especificar tiempo exacto:**
+El callback exacto (2h, 4h, 12h, 5d) lo decide la Sub-acción L.3 con el wait dinámico. Hardcodear "te marco en 4 horas" en el template requeriría 4 templates separados o variables que dependen del valor numérico. Para el pilot, mensaje genérico es suficiente — replicabilidad y aprobación de templates más simple.
 
-**Branches del Custom Webhook (GHL nativo):**
-- **Success branch:** continúa al Wait dinámico (Sub-acción L.4).
-- **Failed branch:** ejecuta WA estático de respaldo (Sub-acción L.3).
+**Replicabilidad:** cambiar el `From phone number` al de cada tratamiento. Mensaje puede ser idéntico (no menciona el tratamiento explícitamente).
 
-**Replicabilidad para otra rama (ej. No Contestó) o tratamiento:**
-- Cambiar `outcome` y `node_context`.
-- Cambiar `treatment` para otro tratamiento.
-- URL, headers, estructura — TODO igual.
-
-#### Sub-acción L.3 — (ELIMINADA · 2026-04-17)
-
-**Decisión técnica corregida:** Custom Webhook de GHL **NO tiene branches success/failure nativos** (verificado en GHL UI 2026-04-17). El fallback NO se hace en GHL — vive **dentro de Elena Chat**:
-
-- Elena Chat recibe el webhook
-- Si gates pasan + LLM responde OK → envía mensaje contextual vía GHL Conversations API
-- Si gates fallan (poco contexto) → envía template estático vía GHL Conversations API
-- Si LLM falla técnicamente → fallback a template estático
-- Elena Chat **siempre intenta enviar algo** y **siempre devuelve 200** al webhook
-
-**Único caso no cubierto:** Elena Chat colapsa completa (Render down, código crashea sin handler). Para ese caso edge, el monitor de Stephanee alerta a Juan — NO se duplica lógica de fallback en GHL.
-
-**Por qué se eliminó el `WA - Llamar luego` estático del workflow:**
-- En el clon de Botox venía un nodo `WA - Llamar luego` después del webhook. Si se mantenía, el paciente recibiría DOS mensajes (uno de Elena Chat + uno estático de GHL en serie) porque GHL Custom Webhook ejecuta fire-and-forget — siempre continúa al siguiente nodo.
-- Eliminado por Juan tras confirmar la arquitectura.
-
-**Opcional (no implementado por ahora):** GHL ofrece checkbox **"Save response from this Webhook"** que captura la respuesta del webhook en custom values. Si en el futuro queremos branching basado en lo que Elena Chat respondió (ej: tomar acciones distintas según `source: "llm" | "fallback"`), se activa esa checkbox y luego se agrega un Condition que lee la respuesta. **Por ahora no es necesario** porque Elena Chat maneja su lógica internamente.
-
-#### Sub-acción L.4 — Condition de horas + Wait dinámico + Go To loop (configurada · 2026-04-17, heredada del clon Botox)
+#### Sub-acción L.3 — Condition de horas + Wait dinámico + Go To loop (heredada del clon Botox)
 
 **Tipo:** Condition con 5 branches que leen `elena_callback_hours`, cada branch ejecuta su Wait correspondiente y luego un Go To que vuelve al **Webhook Llamada 1** (ACCIÓN 7 del workflow).
 
@@ -396,9 +368,7 @@ Si por bug Elena Voice escribiera un valor fuera de la taxonomía (ej: `48`), el
 
 **Replicabilidad:** estas branches y valores son universales para todos los tratamientos. NO se cambia nada al replicar a otro tratamiento. La taxonomía `2/4/12/120` la mantiene Elena Voice global.
 
-#### Sub-acción L.5 — (no existe)
-
-Eliminada conceptualmente — el flujo Llamar Luego cierra con el Go To → Llamada 1 (loop). No hay un "Webhook Llamada 2" separado.
+El flujo Llamar Luego cierra con el Go To → Llamada 1 (loop). No hay un "Webhook Llamada 2" separado para esta rama.
 
 ---
 
@@ -428,54 +398,78 @@ Eliminada conceptualmente — el flujo Llamar Luego cierra con el Go To → Llam
 - **Lógica de negocio (palabras de Juan):** el paciente dejó saber explícitamente que no quiere ser contactado, que no le interesa el servicio, o pidió no recibir más llamadas. **Decisión consciente y verbalizada del lead.**
 - **Por qué stage propio:** queda registrado como "no contactar" — el equipo NO debe insistir, y el contacto debe excluirse de futuras campañas (audiencias FB, broadcasts, otros workflows). Diferente de `No Agendó` que sí tiene reintento humano.
 
-### Rama: No Contestó (configurada · 2026-04-17)
+### Rama: No Contestó (configurada · 2026-04-18 — final)
 
-**Lógica de negocio:** el paciente no contestó la llamada (timeout, voicemail, ocupado). Diferente de Llamar Luego (paciente sí contestó pero pidió diferir).
+**Lógica de negocio:** el paciente no contestó la llamada (timeout, voicemail, ocupado). Diferente de Llamar Luego (donde sí hubo conversación). NO Contestó escala al siguiente intento (Llamada 2, 3, 4) con waits crecientes; cada intento manda template Utility WA propio.
 
-**Estructura final:**
+**Estructura final (1er intento — post-Llamada 1):**
 ```
-[Stage - Llamada 1]                   ← stage del pipeline (1ª llamada hecha)
-[Custom Webhook → Elena Chat]          ← Mejora 5: WA contextual o fallback
+[Stage - Llamada 1]                       ← stage del pipeline (1ª llamada hecha)
+[WA - No contesto 1]                       ← template Utility GHL nativo (heredado del clon)
 [Wait 4h con 2 sub-branches]
-   ├─ Contact Reply → Webhook Llamada 2
-   └─ Time Out      → Webhook Llamada 2
+   ├─ Contact Reply → Webhook Llamada 2   ← paciente respondió al WA → escala
+   └─ Time Out      → Webhook Llamada 2   ← 4h sin respuesta → escala
 ```
 
-#### Sub-acción NC.1 — Stage - Llamada 1 (heredado del clon)
+#### Sub-acción NC.1 — Stage - Llamada 1
 - Pipeline: `Leads Nuevos - Acne`
 - Stage: `Llamada 1` (representa "1 llamada hecha" — el paciente no contestó la primera)
 
-#### Sub-acción NC.2 — Custom Webhook → Elena Chat (Mejora 5)
-Misma config que Sub-acción L.2 de Llamar Luego, **diferencias en body:**
-- `outcome`: `"no_contesto"` (en lugar de `"llamar_luego"`)
-- `intento_numero`: `"1"` (reemplaza a `callback_hours` — Elena Chat lo usa para variar tono según número de intento)
-- `node_context`: `"wa_no_contesto_1_post_llamada_1"`
+#### Sub-acción NC.2 — WA - No contesto 1 (template Utility, heredado del clon)
 
-Body completo:
-```json
-{
-  "contact_id": "{{contact.id}}",
-  "treatment": "acne",
-  "outcome": "no_contesto",
-  "intento_numero": "1",
-  "patient_name": "{{contact.first_name}}",
-  "phone": "{{contact.phone}}",
-  "transcript_summary": "{{contact.elena_summary}}",
-  "node_context": "wa_no_contesto_1_post_llamada_1"
-}
-```
+**Configuración GHL:**
+- **Acción:** Send WhatsApp (acción nativa GHL)
+- **Action name:** `WA - No contesto 1`
+- **Template:** `None - Free form message`
+- **From phone number:** `+1 954-613-6159`
+- **Enable branches:** OFF
+- **Mensaje (heredado del clon Botox, Juan ajusta wording final si quiere):**
+  ```
+  Intenté comunicarme contigo. ¿Prefieres que te llamemos más tarde hoy
+  o mañana? O si prefieres, escríbeme por aquí mismo y te ayudo a agendar
+  ahora. 😉
+  ```
 
-URL, headers, Authorization, Method = idénticos al webhook de Llamar Luego.
+**Por qué template estático:** mismo motivo que L.2 — restricción Meta WhatsApp Business. Ver "DECISIÓN ARQUITECTÓNICA CRÍTICA" al inicio.
+
+**Por qué este wording (3 palancas):**
+1. "Intenté comunicarme contigo" → reconoce la llamada perdida sin ser agresivo
+2. "¿Prefieres que te llamemos más tarde hoy o mañana?" → ofrece 2 opciones concretas (no abierto = más fácil de responder)
+3. "O si prefieres, escríbeme por aquí mismo y te ayudo a agendar ahora" → habilita escalación inmediata por inbound (abre la ventana 24h al instante para conversación libre con Elena Chat)
+
+**Replicabilidad:** mensaje aplica a cualquier tratamiento sin cambios (no menciona acné explícitamente).
 
 #### Sub-acción NC.3 — Wait 4h con 2 sub-branches (heredado del clon)
 - **Contact Reply branch:** se dispara si el paciente responde al WA dentro de 4h. → Webhook Llamada 2.
 - **Time Out branch:** se dispara si pasaron 4h sin respuesta. → Webhook Llamada 2.
 
-Ambas convergen al mismo destino. La diferencia se registra en GHL (Contact Reply queda registrado como interacción inbound del paciente, útil para reportes).
+Ambas convergen al mismo destino. La diferencia se registra en GHL: Contact Reply queda como interacción inbound (útil para reportes y abre ventana 24h para Elena Chat conversación libre).
 
-**Por qué ambos van a Llamada 2 (no loop a Llamada 1 como Llamar Luego):**
-En Llamar Luego el paciente sí contestó y pidió posponer → se reusa Llamada 1 como reintento del mismo nivel. En No Contestó NO hubo conversación → escala al siguiente intento (Llamada 2) con prompt potencialmente diferente o tono distinto. Es escalación, no reintento horizontal.
+**Por qué ambos van a Llamada 2 (y no loop a Llamada 1 como Llamar Luego):**
+En Llamar Luego el paciente sí contestó y pidió posponer → se reusa Llamada 1 como reintento horizontal. En No Contestó NO hubo conversación → escala al siguiente intento (Llamada 2) que es un nodo Webhook separado más adelante en el workflow. Es escalación, no reintento horizontal.
+
+#### Estructura completa del patrón No Contestó (post-llamadas 2, 3, 4)
+
+El workflow Lead Nuevo tiene N nodos `Webhook Llamada N` (1, 2, 3, 4) — cada uno seguido de Wait 15min → Condition N. La rama "No Contestó" de cada Condition repite el patrón NC.1-NC.3 con:
+- Stage destino: `Llamada N` (2, 3, 4)
+- Mensaje WA: `WA - No contesto N` (con wording escalado: más insistente / urgente conforme N crece)
+- Wait time entre intentos: típicamente 4h, 24h, 72h (dependiendo de la política del clon Botox que Juan ya validó)
+- Tras Llamada 4 sin respuesta: stage final `Sin Respuesta` (o equivalente — verificar en clon Botox)
+
+**Replicabilidad:** este patrón completo aplica idéntico a todos los tratamientos. Solo cambian los nombres del pipeline/stages y el FROM phone number del WA.
 
 ---
 
-_(Pendiente de configurar: rama None — fallback de seguridad cuando ninguna condición se cumple.)_
+### Rama: None del NODO 1 (fallback de seguridad)
+
+**Lógica:** se dispara si `elena_last_outcome` no coincide con ninguno de los 6 valores esperados (agendo, llamar_luego, no_contesto, no_agendo, no_interesado, error_tecnico). Esto solo pasa si:
+- Bug en `app.py` de Elena Voice escribe valor fuera de taxonomía
+- Custom field se borra antes de que la Condition lo lea (race condition con el Wait 15min — improbable pero posible)
+- Elena Voice no escribió el campo (llamada nunca se conectó por error de Vapi)
+
+**Acción típica (heredada del clon Botox):**
+- `WA - Internal Notification` al equipo (alerta humana de caso edge)
+- Sin cambio de stage (la oportunidad queda donde estaba)
+- Posiblemente reintento de Llamada 1 con Go To, o pasar a humano
+
+Juan verifica en GHL qué hace exactamente el clon en esta rama.
