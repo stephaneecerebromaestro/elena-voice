@@ -60,7 +60,7 @@ AUDIT_LOOKBACK_HOURS = int(os.getenv("AUDIT_LOOKBACK_HOURS", "25"))
 AUDIT_BATCH_SIZE = int(os.getenv("AUDIT_BATCH_SIZE", "50"))
 CONFIDENCE_THRESHOLD_CORRECTION = float(os.getenv("CONFIDENCE_THRESHOLD_CORRECTION", "0.85"))
 ARIA_VERSION = "3.1.1"
-AUDIT_MODEL = "claude-sonnet-4-5"
+AUDIT_MODEL = os.getenv("AUDIT_MODEL", "claude-haiku-4-5")  # 2026-04-19: migrado de sonnet-4-5 → haiku-4-5 para reducir costo ~3x. Override via env var si se quiere revertir rápido sin redeploy.
 
 # ────────────────────────────────────────────────────────────────────────────
 # REBRAND 2026-04-14 (Opción A — cosmético, ver REBRAND_ARIA.md)
