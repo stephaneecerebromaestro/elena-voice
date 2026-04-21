@@ -1239,10 +1239,14 @@ def _process_end_of_call(message):
             outcome = "agendo"
             outcome_label = "Agendó"
             stage = "Consulta Agendada"
-        elif llamar_luego_confirmed:
+        elif llamar_luego_confirmed and not (
+            short_call or voicemail_by_elena or voicemail_by_customer
+            or ended_reason in ("customer-did-not-answer", "voicemail", "no-answer", "customer-busy")
+        ):
             # FIX N: schedule_callback tool executed successfully — second highest priority.
-            # This is the ground truth: Elena programmed a callback. No keyword matching needed.
-            # Overrides any ended_reason or transcript analysis.
+            # VOICEMAIL GATE: if Vapi reports no-answer or voicemail signals, ignore schedule_callback.
+            # Elena incorrectly calls schedule_callback on voicemails; this gate prevents the
+            # outcome from being forced to llamar_luego on a call nobody answered.
             outcome = "llamar_luego"
             outcome_label = "Llamar Luego"
             stage = "Llamar Luego"
@@ -1412,7 +1416,19 @@ def _process_end_of_call(message):
                     outcome = "llamar_luego"
                     outcome_label = "Llamar Luego"
                     stage = "Llamar Luego"
-                    print("[outcome] llamar_luego via keyword fallback (schedule_callback not in messages)")
+                    # Parse callback hours from transcript so GHL can route to correct Wait branch
+                    if callback_hours_confirmed == 0:
+                        if any(k in transcript_lower for k in ["en 2 hora", "en dos hora", "2 horas", "dos horas", "in 2 hour", "in two hour"]):
+                            callback_hours_confirmed = 2
+                        elif any(k in transcript_lower for k in ["en 4 hora", "en cuatro hora", "4 horas", "cuatro horas", "esta tarde", "this afternoon", "in 4 hour"]):
+                            callback_hours_confirmed = 4
+                        elif any(k in transcript_lower for k in ["mañana", "tomorrow", "tomorrow morning", "mañana en la mañana", "mañana en la tarde"]):
+                            callback_hours_confirmed = 12
+                        elif any(k in transcript_lower for k in ["próxima semana", "next week", "la semana que viene", "en unos días", "más adelante", "luego", "later", "en unos dias"]):
+                            callback_hours_confirmed = 120
+                        else:
+                            callback_hours_confirmed = 12  # default: 12h
+                    print(f"[outcome] llamar_luego via keyword fallback (hours parsed={callback_hours_confirmed})")
                 else:
                     # FIX E1: Detect explicit rejection — no_interesado
                     # Must be checked AFTER llamar_luego to avoid false positives
@@ -1521,6 +1537,11 @@ def _process_end_of_call(message):
             _update_contact_custom_field(contact_id, "elena_summary", summary[:1000] if summary else "")
             _update_contact_custom_field(contact_id, "elena_ended_reason", ended_reason)
             _update_contact_custom_field(contact_id, "elena_call_type", call_type)
+            # Write elena_callback_hours when outcome is llamar_luego so GHL can route
+            # to the correct Wait branch (2h/4h/12h/5d). Previously only schedule_callback
+            # wrote this field; now the end-of-call handler owns it to survive tool removal.
+            if outcome == "llamar_luego" and callback_hours_confirmed > 0:
+                _update_contact_custom_field(contact_id, "elena_callback_hours", str(callback_hours_confirmed))
             if call_id:
                 _update_contact_custom_field(contact_id, "elena_call_id", call_id)
             if appointment_id:
