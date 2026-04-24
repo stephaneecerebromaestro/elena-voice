@@ -10,7 +10,8 @@ import json
 from datetime import datetime, timedelta
 import pytz
 
-VAPI_KEY = "VAPI_KEY_REDACTED_ROTATED_2026_04_24"
+with open("/root/.secrets/vapi_key") as _kf:
+    VAPI_KEY = _kf.read().strip()
 ASSISTANT_ID = "1631c7cf-2914-45f9-bf82-6635cdf00aba"
 SERVER_URL = "https://elena-pdem.onrender.com/api/vapi/server-url"
 
