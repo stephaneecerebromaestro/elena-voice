@@ -698,7 +698,7 @@ def _get_treatment_from_call(call_data: dict) -> tuple[str, str]:
 
 
 def _build_aria_system_prompt(treatment_display: str) -> str:
-    return _ARIA_SYSTEM_PROMPT_TEMPLATE.format(treatment_name=treatment_display)
+    return _ARIA_SYSTEM_PROMPT_TEMPLATE.replace("{treatment_name}", treatment_display)
 
 
 def audit_call_with_claude(call_data: dict, treatment_display: str = "Botox") -> dict:
