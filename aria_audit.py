@@ -453,6 +453,7 @@ def telegram_notify_call(
     confidence: float, reasoning: str, errors: list, playbook_score: float,
     contact_name: str = None, call_ended_at: str = None, duration_seconds: int = None,
     has_discrepancy: bool = False, correction_id: str = None,
+    treatment_display: str = "Botox",
 ) -> bool:
     import pytz
     confidence_pct = int((confidence or 0) * 100)
@@ -490,7 +491,8 @@ def telegram_notify_call(
         ]
         errors_section = "\n\n⚠️ <b>Errores de playbook:</b>\n" + "\n".join(lines)
     sep = "━" * 24
-    header = level_icon + " <b>" + BRAND_DISPLAY + " · " + level_label + "</b>\n" + sep
+    brand = "Elena Voice " + treatment_display + " · Auditoría"
+    header = level_icon + " <b>" + brand + " · " + level_label + "</b>\n" + sep
     meta = name_line + "📞 <code>+" + phone_display + "</code>  " + datetime_line + dur_text
     if has_discrepancy:
         outcome_block = (
@@ -522,7 +524,7 @@ def telegram_notify_call(
 # ARIA AUDIT ENGINE — CLAUDE
 # ============================================================
 
-ARIA_SYSTEM_PROMPT = """Eres ARIA, el sistema de auditoría de llamadas para Elena, una agente de IA de ventas de Laser Place Miami que agenda citas de Botox.
+_ARIA_SYSTEM_PROMPT_TEMPLATE = """Eres ARIA, el sistema de auditoría de llamadas para Elena, una agente de IA de ventas de Laser Place Miami que agenda citas de {treatment_name}.
 Tu trabajo es analizar transcripts de llamadas telefónicas y determinar:
 1. Si la clasificación del outcome es correcta
 2. Si Elena siguió el playbook correctamente
@@ -672,7 +674,34 @@ def build_fewshot_block(examples: list) -> str:
     return "\n".join(lines)
 
 
-def audit_call_with_claude(call_data: dict) -> dict:
+# Mapa treatment string → nombre legible para el system prompt y notificaciones
+_TREATMENT_DISPLAY = {
+    "botox":           "Botox",
+    "lhr":             "Depilación Láser",
+    "acne":            "Acné",
+    "cicatrices":      "Cicatrices",
+    "fillers":         "Fillers",
+    "radiesse":        "Bioestimuladores",
+    "rejuvenecimiento": "Rejuvenecimiento",
+}
+
+def _get_treatment_from_call(call_data: dict) -> tuple[str, str]:
+    """Retorna (treatment_key, treatment_display) desde el assistantId del call."""
+    try:
+        from config import ASSISTANTS as _ASSISTANTS
+        assistant_id = call_data.get("assistantId", "") or ""
+        cfg = _ASSISTANTS.get(assistant_id, {})
+        treatment_key = cfg.get("treatment", "botox")
+    except Exception:
+        treatment_key = "botox"
+    return treatment_key, _TREATMENT_DISPLAY.get(treatment_key, treatment_key.title())
+
+
+def _build_aria_system_prompt(treatment_display: str) -> str:
+    return _ARIA_SYSTEM_PROMPT_TEMPLATE.format(treatment_name=treatment_display)
+
+
+def audit_call_with_claude(call_data: dict, treatment_display: str = "Botox") -> dict:
     """Auditar una llamada con Claude. Produce outcome + errores + inteligencia de cliente."""
     call_id = call_data.get("id", "unknown")
     transcript = call_data.get("transcript", "") or ""
@@ -723,7 +752,7 @@ def audit_call_with_claude(call_data: dict) -> dict:
         response = anthropic_client.messages.create(
             model=AUDIT_MODEL,
             max_tokens=1500,
-            system=ARIA_SYSTEM_PROMPT,
+            system=_build_aria_system_prompt(treatment_display),
             messages=[{"role": "user", "content": user_prompt}]
         )
         response_text = response.content[0].text.strip()
@@ -840,8 +869,11 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str, sil
     if not ghl_contact_id and phone:
         ghl_contact_id = get_ghl_contact_id_by_phone(phone)
 
+    # Extraer tratamiento desde assistantId
+    treatment_key, treatment_display = _get_treatment_from_call(call_data)
+
     # Auditar con Claude PRIMERO (tarda ~30s), luego leer GHL para evitar race condition
-    audit_result = audit_call_with_claude(call_data)
+    audit_result = audit_call_with_claude(call_data, treatment_display=treatment_display)
     aria_outcome = audit_result.get("correct_outcome")
     aria_confidence = audit_result.get("confidence", 0.0)
 
@@ -959,6 +991,7 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str, sil
             contact_name=contact_name, call_ended_at=ended_at,
             duration_seconds=duration_seconds,
             has_discrepancy=has_discrepancy, correction_id=_correction_id,
+            treatment_display=treatment_display,
         )
 
     return {
