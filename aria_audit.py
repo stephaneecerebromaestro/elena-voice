@@ -457,6 +457,9 @@ def telegram_notify_call(
 ) -> bool:
     import pytz
     confidence_pct = int((confidence or 0) * 100)
+    def _esc(s: str) -> str:
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") if s else s
+
     playbook_text = f"{playbook_score*100:.0f}%" if playbook_score is not None else "N/A"
     phone_display = phone[-10:] if phone and len(phone) >= 10 else phone or "N/A"
     high_errors = [e for e in (errors or []) if e.get("severity", "").upper() in ("HIGH", "CRITICAL")]
@@ -466,7 +469,7 @@ def telegram_notify_call(
         level_icon, level_label = "🟡", "ALERTA DE CALIDAD"
     else:
         level_icon, level_label = "🟢", "LLAMADA OK"
-    name_line = (f"👤 <b>{contact_name}</b>\n") if contact_name else ""
+    name_line = (f"👤 <b>{_esc(contact_name)}</b>\n") if contact_name else ""
     datetime_line = ""
     if call_ended_at:
         try:
@@ -486,7 +489,7 @@ def telegram_notify_call(
     if errors:
         severity_icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "⚪"}
         lines = [
-            "  " + severity_icon.get(e.get("severity", "").upper(), "•") + " " + e.get("type", "?") + ": " + e.get("description", "")[:80]
+            "  " + severity_icon.get(e.get("severity", "").upper(), "•") + " " + _esc(e.get("type", "?")) + ": " + _esc(e.get("description", "")[:80])
             for e in errors[:5]
         ]
         errors_section = "\n\n⚠️ <b>Errores de playbook:</b>\n" + "\n".join(lines)
@@ -505,7 +508,7 @@ def telegram_notify_call(
             "🤖 Outcome: <b>" + aria_label + "</b>  (" + str(confidence_pct) + "% confianza)\n"
             "📊 Playbook: " + playbook_text
         )
-    reasoning_block = "💬 <i>" + (reasoning or "")[:280] + "</i>" if reasoning else ""
+    reasoning_block = "💬 <i>" + _esc((reasoning or "")[:280]) + "</i>" if reasoning else ""
     full_text = "\n".join(filter(None, [header, meta, outcome_block, reasoning_block])) + errors_section
     reply_markup = None
     if has_discrepancy and correction_id:
@@ -833,7 +836,10 @@ def process_call(call_data: dict, already_audited: set, silent: bool = False) ->
     call_id = call_data.get("id")
     if call_id in already_audited:
         return None
-    if call_data.get("status") != "ended":
+    # Status ausente = viene del webhook end-of-call (que por definición ya terminó).
+    # Solo bloquear si el status está explícitamente presente y no es "ended".
+    _status = call_data.get("status")
+    if _status and _status != "ended":
         return None
     with _calls_in_progress_lock:
         if call_id in _calls_in_progress:
