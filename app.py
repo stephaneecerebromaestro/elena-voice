@@ -2364,7 +2364,11 @@ def health():
     })
 
 
-start_aria_polling(interval_seconds=180)
+try:
+    from aria_audit import start_aria_polling
+    start_aria_polling(interval_seconds=180)
+except Exception as _poll_err:
+    logging.getLogger("aria").error(f"ARIA Polling start error: {_poll_err}")
 
 # ─── ARIA Weekly Cron — Reporte de errores cada sábado 9:00 AM EDT ──────────
 try:
