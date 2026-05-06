@@ -316,9 +316,13 @@ def fetch_vapi_call_by_id(call_id: str) -> Optional[dict]:
 
 
 def get_already_audited_ids(limit: int = 1000) -> set:
-    """FIX #3: limit=1000 para no truncar."""
-    records = supabase_select("call_audits", limit=limit)
-    return {r["vapi_call_id"] for r in records if "vapi_call_id" in r}
+    """Query by date (last 48h) — immune to total record count growth."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    records = supabase_query(
+        "call_audits",
+        f"created_at=gte.{cutoff}&select=vapi_call_id&order=created_at.desc&limit=10000"
+    )
+    return {r.get("vapi_call_id") for r in records if r.get("vapi_call_id")}
 
 
 def get_audited_ids_in_range(utc_start: str, utc_end: str) -> set:
