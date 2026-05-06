@@ -987,6 +987,22 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str, sil
             _correction_id = str(correction_saved.get("id"))
 
     contact_name = ghl_fields.get("contact_full_name") if ghl_fields else None
+
+    # Guard: prevent duplicate Telegram across Gunicorn workers (polling vs webhook race)
+    # If the saved record was created more than 60s ago, another worker already notified.
+    if not silent and saved:
+        try:
+            from datetime import timezone as _tz
+            record_created = saved.get("created_at", "")
+            if record_created:
+                record_dt = datetime.fromisoformat(record_created.replace("Z", "+00:00"))
+                age_seconds = (datetime.now(_tz.utc) - record_dt).total_seconds()
+                if age_seconds > 60:
+                    log.info(f"Telegram skip [{call_id}]: record is {age_seconds:.0f}s old — likely already notified by another worker")
+                    silent = True
+        except Exception:
+            pass
+
     if not silent:
         telegram_notify_call(
             call_id=call_id, phone=phone,
