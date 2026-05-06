@@ -2735,8 +2735,8 @@ def _aria_polling_loop(interval_seconds: int = 180):
                         log.error("ARIA Polling [" + call_id + "]: error en register_no_contesto — " + str(e))
                     continue
                 try:
-                    log.info("ARIA Polling [" + call_id + "]: auditando...")
-                    result = process_call(call_data, already_audited)
+                    log.info("ARIA Polling [" + call_id + "]: auditando (silent — Telegram solo via webhook)...")
+                    result = process_call(call_data, already_audited, silent=True)
                     if result:
                         log.info("ARIA Polling [" + call_id + "]: auditado — " + str(result.get("audit_status")))
                         already_audited.add(call_id)
