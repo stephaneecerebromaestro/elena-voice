@@ -2393,12 +2393,11 @@ def health():
     })
 
 
-# ─── ARIA Polling — Iniciar al arrancar el servidor ───────────────────────────
-try:
-    from aria_audit import start_aria_polling
-    start_aria_polling(interval_seconds=180)  # cada 3 minutos
-except Exception as _polling_err:
-    logging.getLogger("aria").error(f"Error iniciando ARIA Polling: {_polling_err}")
+# ─── ARIA Polling — DESACTIVADO (2026-05-06)
+# El webhook en tiempo real maneja todas las auditorías.
+# El polling causaba notificaciones duplicadas. Si se necesita auditar
+# llamadas manualmente: POST /aria/audit/run {"hours_back": N}
+# start_aria_polling(interval_seconds=180)
 
 # ─── ARIA Weekly Cron — Reporte de errores cada sábado 9:00 AM EDT ──────────
 try:
