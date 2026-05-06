@@ -1746,35 +1746,6 @@ def vapi_server_url():
             t = threading.Thread(target=_process_end_of_call, args=(message,), daemon=True)
             t.start()
 
-            # ARIA: auditar la llamada en tiempo real (thread separado, no bloquea)
-            try:
-                call_data = message.get("call") or message
-                def _aria_realtime_audit(cd):
-                    """Ejecuta el audit real-time sin depender del módulo cacheado.
-                    Usa aria_audit directamente si ya está importado, o lo importa una vez.
-                    El módulo usa os.environ.get() internamente — las env vars ya están
-                    disponibles en el proceso Flask desde el inicio.
-                    """
-                    import logging as _log
-                    _aria_log = _log.getLogger('aria')
-                    try:
-                        # Importar sin reload — las env vars ya están en os.environ
-                        # desde que el proceso Flask arrancó en Render
-                        import aria_audit as _aria
-                        _aria_log.info(f'ARIA realtime: iniciando audit para call {str(cd.get("id",""))[:20]}')
-                        result = _aria.process_single_call_realtime(cd)
-                        if result:
-                            _aria_log.info(f'ARIA realtime: audit completado — discrepancy={result.get("has_discrepancy")} outcome={result.get("aria_outcome")}')
-                        else:
-                            _aria_log.warning('ARIA realtime: audit retornó None (llamada ya auditada o sin datos)')
-                    except Exception as _e:
-                        _aria_log.error(f'ARIA realtime audit error: {type(_e).__name__}: {_e}', exc_info=True)
-                aria_t = threading.Thread(target=_aria_realtime_audit, args=(call_data,), daemon=False)  # FIX C1: non-daemon — ARIA thread sobrevive reciclado de worker Gunicorn
-                aria_t.start()
-                logging.getLogger('aria').info('ARIA realtime: thread iniciado (non-daemon)')
-            except Exception as _hook_e:
-                logging.getLogger('aria').error(f'ARIA realtime hook error: {_hook_e}')  # Log pero no bloquea Elena
-
             return jsonify({"status": "ok"}), 200, cors
 
         elif message_type in ["status-update", "hang", "speech-update", "transcript"]:
@@ -2393,11 +2364,7 @@ def health():
     })
 
 
-# ─── ARIA Polling — DESACTIVADO (2026-05-06)
-# El webhook en tiempo real maneja todas las auditorías.
-# El polling causaba notificaciones duplicadas. Si se necesita auditar
-# llamadas manualmente: POST /aria/audit/run {"hours_back": N}
-# start_aria_polling(interval_seconds=180)
+start_aria_polling(interval_seconds=180)
 
 # ─── ARIA Weekly Cron — Reporte de errores cada sábado 9:00 AM EDT ──────────
 try:
