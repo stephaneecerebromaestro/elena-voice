@@ -13,7 +13,7 @@ set -euo pipefail
 REPO=/root/agents/elena-voice
 ENV_FILE=/etc/elena-voice/env
 LOG=/root/.claude/logs/elena-voice-audit.log
-PY=/tmp/elena_venv/bin/python
+PY=/root/agents/elena-voice/venv/bin/python
 
 mkdir -p "$(dirname "$LOG")"
 
