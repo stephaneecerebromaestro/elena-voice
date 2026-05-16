@@ -204,6 +204,26 @@ def main() -> int:
         print("\n✓ Nada que publicar — el prompt del repo ya coincide con Vapi live.")
         return 0
 
+    # VALIDACIÓN: verificar que el nuevo prompt tiene los fixes críticos (v2.3+)
+    REQUIRED_FIXES = {
+        "Fix1-anti-loop-buzon":     "PROHIBICIÓN EN BUZÓN",
+        "Fix2-anti-ghost-booking":  "PROHIBICIÓN ABSOLUTA BUZÓN",
+        "Fix3-receptionist":        "EXCEPCIÓN RECEPCIONISTA",
+        "Fix5-english-rejection":   "EXCEPCIÓN RECHAZO EN INGLÉS",
+    }
+    missing = [name for name, kw in REQUIRED_FIXES.items() if kw not in new_prompt]
+    if missing:
+        print(f"\n⚠️  ADVERTENCIA: El nuevo prompt NO tiene los siguientes fixes críticos:")
+        for m in missing:
+            print(f"    - {m}")
+        print("    Estos fixes se perdieron al editar el mirror. Aplícalos antes de publicar.")
+        print("    Referencia: scripts/apply_critical_fixes.py")
+        if not args.dry_run:
+            ans = input("    ¿Continuar de todas formas? [y/N] ").strip().lower()
+            if ans != "y":
+                print("Cancelado.")
+                return 1
+
     if args.dry_run:
         print("\n--dry-run: no se publica. Repetir sin --dry-run para aplicar.")
         return 0
