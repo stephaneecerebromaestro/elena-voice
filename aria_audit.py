@@ -1002,8 +1002,16 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str, sil
         supabase_upsert("call_intelligence", intel_record, on_conflict="vapi_call_id")
         log.info("Client intelligence saved [" + call_id + "]: stage=" + str(client_intel.get("buying_stage")) + " interest=" + str(client_intel.get("interest_level")))
 
+    # Casos que ARIA auto-aprueba sin pedir confirmación a Juan
+    AUTO_APPROVE_CASES = {
+        ("no_agendo", "no_contesto"),
+    }
+
     _correction_id = None
+    _auto_approved = False
     if saved and has_discrepancy and ghl_contact_id:
+        is_auto = (original_outcome, aria_outcome) in AUTO_APPROVE_CASES
+        initial_status = "applied" if is_auto else "pending"
         correction_record = {
             "audit_id": saved.get("id"),
             "vapi_call_id": call_id,
@@ -1011,11 +1019,16 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str, sil
             "field_name": "elena_last_outcome",
             "old_value": original_outcome,
             "new_value": aria_outcome,
-            "correction_status": "pending",
+            "correction_status": initial_status,
         }
         correction_saved = supabase_insert("aria_corrections", correction_record)
         if correction_saved:
             _correction_id = str(correction_saved.get("id"))
+        if is_auto:
+            ghl_ok = update_ghl_contact_outcome(ghl_contact_id, aria_outcome)
+            log.info(f"Auto-correction applied [{call_id}]: {original_outcome} → {aria_outcome} | GHL={ghl_ok}")
+            _auto_approved = True
+            has_discrepancy = False  # no mostrar botones APROBAR/RECHAZAR
 
     contact_name = ghl_fields.get("contact_full_name") if ghl_fields else None
 
@@ -1035,18 +1048,32 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str, sil
             pass
 
     if not silent:
-        telegram_notify_call(
-            call_id=call_id, phone=phone,
-            original_outcome=original_outcome, aria_outcome=aria_outcome,
-            confidence=aria_confidence, reasoning=audit_result.get("reasoning"),
-            errors=audit_result.get("errors_detected", []),
-            playbook_score=audit_result.get("playbook_adherence_score"),
-            contact_name=contact_name, call_ended_at=ended_at,
-            duration_seconds=duration_seconds,
-            has_discrepancy=has_discrepancy, correction_id=_correction_id,
-            treatment_display=treatment_display,
-            booked_start_time=booked_start_time,
-        )
+        if _auto_approved:
+            # Notificación informativa — ARIA actuó sola, sin botones
+            phone_display = phone[-10:] if phone and len(phone) >= 10 else phone or "N/A"
+            name_display = contact_name or ("+" + phone_display)
+            outcome_labels = OUTCOME_LABELS
+            telegram_send(
+                f"🤖 <b>ARIA — Corrección Automática</b>\n"
+                f"{'─' * 28}\n"
+                f"👤 {name_display}  📞 <code>+{phone_display}</code>\n"
+                f"GHL tenía: <b>{outcome_labels.get(original_outcome, original_outcome)}</b> → "
+                f"ARIA corrigió a: <b>{outcome_labels.get(aria_outcome, aria_outcome)}</b>\n"
+                f"✅ Aplicado automáticamente en GHL"
+            )
+        else:
+            telegram_notify_call(
+                call_id=call_id, phone=phone,
+                original_outcome=original_outcome, aria_outcome=aria_outcome,
+                confidence=aria_confidence, reasoning=audit_result.get("reasoning"),
+                errors=audit_result.get("errors_detected", []),
+                playbook_score=audit_result.get("playbook_adherence_score"),
+                contact_name=contact_name, call_ended_at=ended_at,
+                duration_seconds=duration_seconds,
+                has_discrepancy=has_discrepancy, correction_id=_correction_id,
+                treatment_display=treatment_display,
+                booked_start_time=booked_start_time,
+            )
 
     return {
         "call_id": call_id,
