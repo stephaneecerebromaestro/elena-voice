@@ -470,6 +470,7 @@ def telegram_notify_call(
     contact_name: str = None, call_ended_at: str = None, duration_seconds: int = None,
     has_discrepancy: bool = False, correction_id: str = None,
     treatment_display: str = "Botox", booked_start_time: str = None,
+    call_type: str = None, auto_correction: tuple = None,
 ) -> bool:
     import pytz
     confidence_pct = int((confidence or 0) * 100)
@@ -512,7 +513,12 @@ def telegram_notify_call(
     sep = "━" * 24
     brand = "Elena Voice " + treatment_display + " · Auditoría"
     header = level_icon + " <b>" + brand + " · " + level_label + "</b>\n" + sep
-    meta = name_line + "📞 <code>+" + phone_display + "</code>  " + datetime_line + dur_text
+    call_dir = ""
+    if call_type == "inboundPhoneCall":
+        call_dir = " · 📲 Entrante"
+    elif call_type == "outboundPhoneCall":
+        call_dir = " · 📤 Saliente"
+    meta = name_line + "📞 <code>+" + phone_display + "</code>  " + datetime_line + dur_text + call_dir
     if has_discrepancy:
         outcome_block = (
             "📋 GHL: <b>" + orig_label + "</b>\n"
@@ -526,7 +532,13 @@ def telegram_notify_call(
         )
     reasoning_block = "💬 <i>" + _esc((reasoning or "")[:280]) + "</i>" if reasoning else ""
     booked_line = ("📅 <b>Fecha de la cita:</b> " + _fmt_appt_voice(booked_start_time)) if (aria_outcome == "agendo" and booked_start_time) else ""
-    full_text = "\n".join(filter(None, [header, meta, outcome_block, booked_line, reasoning_block])) + errors_section
+    auto_line = ""
+    if auto_correction:
+        old_v, new_v = auto_correction
+        old_lbl = OUTCOME_LABELS.get(old_v, old_v)
+        new_lbl = OUTCOME_LABELS.get(new_v, new_v)
+        auto_line = f"🤖 <b>ARIA corrigió automáticamente:</b> {old_lbl} → {new_lbl}"
+    full_text = "\n".join(filter(None, [header, meta, outcome_block, booked_line, auto_line, reasoning_block])) + errors_section
     reply_markup = None
     if has_discrepancy and correction_id:
         reply_markup = {
@@ -874,6 +886,7 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str, sil
     log.info("Processing call: " + call_id)
     customer = call_data.get("customer", {}) or {}
     phone = customer.get("number", "")
+    call_type = call_data.get("type", "")
     ghl_contact_id = None
     original_outcome = None
 
@@ -1048,32 +1061,20 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str, sil
             pass
 
     if not silent:
-        if _auto_approved:
-            # Notificación informativa — ARIA actuó sola, sin botones
-            phone_display = phone[-10:] if phone and len(phone) >= 10 else phone or "N/A"
-            name_display = contact_name or ("+" + phone_display)
-            outcome_labels = OUTCOME_LABELS
-            telegram_send(
-                f"🤖 <b>ARIA — Corrección Automática</b>\n"
-                f"{'─' * 28}\n"
-                f"👤 {name_display}  📞 <code>+{phone_display}</code>\n"
-                f"GHL tenía: <b>{outcome_labels.get(original_outcome, original_outcome)}</b> → "
-                f"ARIA corrigió a: <b>{outcome_labels.get(aria_outcome, aria_outcome)}</b>\n"
-                f"✅ Aplicado automáticamente en GHL"
-            )
-        else:
-            telegram_notify_call(
-                call_id=call_id, phone=phone,
-                original_outcome=original_outcome, aria_outcome=aria_outcome,
-                confidence=aria_confidence, reasoning=audit_result.get("reasoning"),
-                errors=audit_result.get("errors_detected", []),
-                playbook_score=audit_result.get("playbook_adherence_score"),
-                contact_name=contact_name, call_ended_at=ended_at,
-                duration_seconds=duration_seconds,
-                has_discrepancy=has_discrepancy, correction_id=_correction_id,
-                treatment_display=treatment_display,
-                booked_start_time=booked_start_time,
-            )
+        telegram_notify_call(
+            call_id=call_id, phone=phone,
+            original_outcome=original_outcome, aria_outcome=aria_outcome,
+            confidence=aria_confidence, reasoning=audit_result.get("reasoning"),
+            errors=audit_result.get("errors_detected", []),
+            playbook_score=audit_result.get("playbook_adherence_score"),
+            contact_name=contact_name, call_ended_at=ended_at,
+            duration_seconds=duration_seconds,
+            has_discrepancy=has_discrepancy, correction_id=_correction_id,
+            treatment_display=treatment_display,
+            booked_start_time=booked_start_time,
+            call_type=call_type,
+            auto_correction=(original_outcome, aria_outcome) if _auto_approved else None,
+        )
 
     return {
         "call_id": call_id,
