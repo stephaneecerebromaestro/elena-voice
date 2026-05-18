@@ -452,12 +452,24 @@ def telegram_send(text: str, reply_markup: dict = None, chat_id: str = None) -> 
         return None
 
 
+def _fmt_appt_voice(iso_str):
+    """'2026-05-19T10:30:00-04:00' → '05/19/2026 - 10:30am'"""
+    try:
+        import pytz as _pytz
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        miami = _pytz.timezone("America/New_York")
+        dt = dt.astimezone(miami)
+        return dt.strftime("%m/%d/%Y - ") + dt.strftime("%-I:%M%p").lower()
+    except Exception:
+        return iso_str
+
+
 def telegram_notify_call(
     call_id: str, phone: str, original_outcome: str, aria_outcome: str,
     confidence: float, reasoning: str, errors: list, playbook_score: float,
     contact_name: str = None, call_ended_at: str = None, duration_seconds: int = None,
     has_discrepancy: bool = False, correction_id: str = None,
-    treatment_display: str = "Botox",
+    treatment_display: str = "Botox", booked_start_time: str = None,
 ) -> bool:
     import pytz
     confidence_pct = int((confidence or 0) * 100)
@@ -513,7 +525,8 @@ def telegram_notify_call(
             "📊 Playbook: " + playbook_text
         )
     reasoning_block = "💬 <i>" + _esc((reasoning or "")[:280]) + "</i>" if reasoning else ""
-    full_text = "\n".join(filter(None, [header, meta, outcome_block, reasoning_block])) + errors_section
+    booked_line = ("📅 <b>Fecha de la cita:</b> " + _fmt_appt_voice(booked_start_time)) if (aria_outcome == "agendo" and booked_start_time) else ""
+    full_text = "\n".join(filter(None, [header, meta, outcome_block, booked_line, reasoning_block])) + errors_section
     reply_markup = None
     if has_discrepancy and correction_id:
         reply_markup = {
@@ -882,6 +895,20 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str, sil
     # Extraer tratamiento desde assistantId
     treatment_key, treatment_display = _get_treatment_from_call(call_data)
 
+    # Extraer startTime del tool call create_booking (para notificación si agendó)
+    booked_start_time = None
+    for _msg in call_data.get("messages", []) or []:
+        if _msg.get("role") == "tool_calls":
+            for _tc in _msg.get("toolCalls", []):
+                _fn = _tc.get("function", {})
+                if _fn.get("name") in ("create_booking", "reschedule_appointment"):
+                    try:
+                        _args = json.loads(_fn.get("arguments", "{}") or "{}")
+                        booked_start_time = _args.get("startTime") or _args.get("start_time")
+                    except Exception:
+                        pass
+                    break
+
     # Auditar con Claude PRIMERO (tarda ~30s), luego leer GHL para evitar race condition
     audit_result = audit_call_with_claude(call_data, treatment_display=treatment_display)
     aria_outcome = audit_result.get("correct_outcome")
@@ -1018,6 +1045,7 @@ def _process_call_inner(call_data: dict, already_audited: set, call_id: str, sil
             duration_seconds=duration_seconds,
             has_discrepancy=has_discrepancy, correction_id=_correction_id,
             treatment_display=treatment_display,
+            booked_start_time=booked_start_time,
         )
 
     return {
