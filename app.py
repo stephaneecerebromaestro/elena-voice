@@ -202,7 +202,7 @@ NO_INTERESADO_PHRASES = [
     "no me interesa por ahora", "por ahora no me interesa",
 ]
 
-SERVER_VERSION = "v18.1"  # v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
+SERVER_VERSION = "v18.2"  # v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
                            # FIX C2: Telegram independiente de Supabase — ARIA notifica aunque upsert falle
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
@@ -402,7 +402,9 @@ def handle_check_availability(args):
 
                     slots.append({
                         "time": slot,  # EXACT ISO timestamp — use verbatim for create_booking/reschedule
-                        "label": f"{label} a las {time_str}",
+                        # v18.2 — la hora en PALABRAS (banco de pruebas E1, 2026-10-05: con «12:30 pm» Elena decía
+                        # «doce treinta pm» y «la uno pm»). Las tools nuevas ya hablaban así; esta era la que no.
+                        "label": f"{label} a las {v18.hora_en_palabras(dt_local)}",
                         "is_tuesday": is_tuesday,
                         "date": date_key
                     })
