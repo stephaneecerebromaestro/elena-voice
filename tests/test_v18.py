@@ -289,3 +289,12 @@ def test_enviar_info_encendido_manda_una_sola_vez():
     assert r["enviado"] is True and len(g.posts) == 1
     assert g.posts[0][0] == "/conversations/messages"
     assert "Ana" in g.posts[0][1]["message"] and "Suite 302" in g.posts[0][1]["message"]
+
+
+def test_articulo_de_la_hora():
+    """«a la una» (no «a las una»): lo cazó el banco de pruebas en la primera llamada real."""
+    cablear(GHLFalso())
+    assert v18.a_las(TZ.localize(datetime(2026, 10, 6, 13, 0))) == "a la una de la tarde"
+    assert v18.a_las(TZ.localize(datetime(2026, 10, 6, 13, 30))) == "a la una y media de la tarde"
+    assert v18.a_las(TZ.localize(datetime(2026, 10, 6, 1, 0))) == "a la una de la mañana"
+    assert v18.a_las(TZ.localize(datetime(2026, 10, 6, 10, 0))) == "a las diez de la mañana"

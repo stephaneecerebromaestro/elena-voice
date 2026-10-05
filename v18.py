@@ -125,8 +125,13 @@ def dia_en_palabras(dt, ahora):
     return f"el {D['DAYS_ES'][dt.weekday()]} {dt.day} de {D['MONTHS_ES'][dt.month - 1]}"
 
 
+def a_las(dt):
+    """«a la una…» pero «a las dos…»: el artículo concuerda con la hora (banco E1: «a las una» sonaba mal)."""
+    return ("a la " if dt.hour % 12 == 1 else "a las ") + hora_en_palabras(dt)
+
+
 def cuando_en_palabras(dt, ahora):
-    return f"{dia_en_palabras(dt, ahora)} a las {hora_en_palabras(dt)}"
+    return f"{dia_en_palabras(dt, ahora)} {a_las(dt)}"
 
 
 # ── utilidades de contacto ────────────────────────────────────────────────────────────────────
