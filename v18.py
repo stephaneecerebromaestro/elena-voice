@@ -382,9 +382,13 @@ def handle_enviar_info(args):
     if tipo not in PLANTILLAS:
         tipo = "direccion"
     cid = _contacto(args)
-    frase = (f"Te lo mando ahora por mensaje. Estamos en {DIRECCION_VOZ}."
+    # Apagado, la frase NO promete un mensaje: lo dice en voz alta. Prometer un envío que no ocurre es
+    # exactamente lo que mata llamadas («te mando la dirección por mensaje» = 10 llamadas perdidas,
+    # DATOS-DISENO §8) y además sería mentir. Encendido, sí lo anuncia.
+    dicho = (f"Estamos en {DIRECCION_VOZ}. Se aparca en la calle y nosotros te validamos el parqueo."
              if tipo == "direccion" else
-             "Te lo mando por mensaje: lunes a viernes de diez a seis, y sábados de diez a dos.")
+             "Abrimos de lunes a viernes de diez a seis, y sábados de diez a dos.")
+    frase = ((f"Te lo mando ahora por mensaje. {dicho}") if enviar_info_activo() else dicho)
     if not enviar_info_activo():
         _log("enviar_info_apagado", {"contacto": cid, "tipo": tipo,
                                      "nota": "ELENA_ENVIAR_INFO=0 — la plantilla espera el OK de Juan"})
