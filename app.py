@@ -202,7 +202,7 @@ NO_INTERESADO_PHRASES = [
     "no me interesa por ahora", "por ahora no me interesa",
 ]
 
-SERVER_VERSION = "v18.0"  # v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
+SERVER_VERSION = "v18.1"  # v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
                            # FIX C2: Telegram independiente de Supabase — ARIA notifica aunque upsert falle
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
@@ -417,14 +417,15 @@ def handle_check_availability(args):
         slots_by_date = defaultdict(list)
         for s in slots:
             slots_by_date[s["date"]].append(s)
-        tuesday_dates = sorted([d for d in slots_by_date if any(s["is_tuesday"] for s in slots_by_date[d])])
-        other_dates = sorted([d for d in slots_by_date if d not in tuesday_dates])
+        # v18.1 — Juan 2026-10-05: «Gilberto inyecta los martes pero evaluacion puede ser cualqueir dia de la
+        # semana». La prioridad de los martes era un resto del algoritmo viejo (ver FIX A arriba) y hacía que
+        # Elena ofreciera martes primero aunque hubiera huecos antes: menos opciones y más lejos = menos citas.
+        # Ahora el orden es por fecha, lo más pronto primero, 2 por día. `is_tuesday` se sigue enviando (es
+        # informativo: los martes está el inyector). Para volver atrás: ordenar tuesday_dates primero.
         ordered = []
-        for date in tuesday_dates:
+        for date in sorted(slots_by_date):
             ordered.extend(slots_by_date[date][:2])
-        for date in other_dates:
-            ordered.extend(slots_by_date[date][:2])
-        ordered = ordered[:14]  # cap at 14 (7 days × 2 slots)
+        ordered = ordered[:14]  # cap at 14 (7 días × 2 slots)
         return {
             "available": True,
             "slots": ordered,
@@ -436,7 +437,7 @@ def handle_check_availability(args):
                 "NUNCA construyas el startTime manualmente."
             ),
             "message": (
-                "Horarios disponibles. Prioriza martes (is_tuesday=true). "
+                "Horarios disponibles, lo más pronto primero. Ofrece los dos primeros. "
                 "Usa el 'label' para hablar con el cliente y el 'time' exacto para las herramientas. "
                 "Si el cliente pide un día que NO aparece en esta lista, dile exactamente qué días SÍ hay disponibles."
             )
