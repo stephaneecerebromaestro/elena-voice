@@ -202,7 +202,7 @@ NO_INTERESADO_PHRASES = [
     "no me interesa por ahora", "por ahora no me interesa",
 ]
 
-SERVER_VERSION = "v17.57"  # FIX G1: ARIA lee GHL post-Claude (elimina race condition discrepancia)
+SERVER_VERSION = "v18.0"  # v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
                            # FIX C2: Telegram independiente de Supabase — ARIA notifica aunque upsert falle
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
@@ -1715,6 +1715,55 @@ TOOL_HANDLERS = {
 }
 
 
+# ─── v18 · OPTIMIZACIÓN ELENA VOICE: tools y guardas nuevas ────────────────────────────────────
+# Todo lo nuevo vive en v18.py y recibe los helpers de aquí por inyección (sin import circular).
+# Las guardas se activan por BRAZO (?arm=b en la URL de la tool); sin el parámetro, el
+# comportamiento de producción es exactamente el de v17.57. Detalle y desvíos: v18.py.
+import v18  # noqa: E402
+
+v18.wire(TZ=TZ, DAYS_ES=DAYS_ES, MONTHS_ES=MONTHS_ES,
+         ghl_v2_get=ghl_v2_get, ghl_v2_post=ghl_v2_post, ghl_v2_put=ghl_v2_put,
+         handle_get_contact=handle_get_contact,
+         _add_tag_to_contact=_add_tag_to_contact,
+         _update_contact_custom_field=_update_contact_custom_field,
+         _add_note_to_contact=_add_note_to_contact)
+TOOL_HANDLERS.update(v18.TOOLS)   # incluye el alias request_human_handoff → pedir_persona
+
+
+def _ejecutar_tool(fn_name, arguments, message, call_id, arm, entrante):
+    """Punto ÚNICO de ejecución de una tool: inyecta el contexto de la llamada, aplica las guardas de
+    v18 y devuelve el resultado. Sin guardas activas hace exactamente lo que hacía v17.57."""
+    if isinstance(arguments, dict):
+        arguments.setdefault("_call_id", call_id)
+        arguments.setdefault("_arm", arm)
+        arguments.setdefault("_entrante", entrante)
+
+    permitido, motivo = v18.gate_buzon(fn_name, message, call_id, arm)
+    if not permitido:
+        print(f"[v18][gate_buzon] bloqueada {fn_name} call={call_id} motivo={motivo}", flush=True)
+        return {"error": "no_permitido", "motivo": motivo,
+                "message": "No puedo hacer eso ahora mismo."}
+
+    if fn_name == "create_booking" and v18.guardas_activas(arm):
+        ok, por_que = v18.gate_reserva(arguments, call_id)
+        if not ok:
+            print(f"[v18][gate_reserva] bloqueada reserva call={call_id} motivo={por_que}", flush=True)
+            return {"error": "no_permitido", "motivo": por_que,
+                    "message": "Déjame confirmarte la hora antes de reservar."}
+
+    handler = TOOL_HANDLERS.get(fn_name)
+    if not handler:
+        return {"error": f"Función no reconocida: {fn_name}"}
+    try:
+        result = handler(arguments)
+    except Exception as e:
+        return {"error": f"Error ejecutando {fn_name}: {str(e)}"}
+
+    if fn_name == "check_availability":
+        v18.recordar_slots(call_id, result)
+    return result
+
+
 # ─── Vapi Server URL Endpoint ─────────────────────────────────────────────────
 @app.route("/api/vapi/server-url", methods=["POST", "OPTIONS", "GET"])
 def vapi_server_url():
@@ -1757,6 +1806,11 @@ def vapi_server_url():
         assistant_id = call_data.get("assistantId", "")
         active_cfg = set_active_config(assistant_id)
 
+        # v18: brazo del A/B (?arm=b activa las guardas nuevas) + datos de esta llamada
+        arm = (request.args.get("arm") or "a").lower()
+        call_id_v18 = call_data.get("id", "")
+        es_entrante = (call_data.get("type") or call_data.get("call_type") or "") == "inboundPhoneCall"
+
         if message_type == "tool-calls":
             tool_calls = message.get("toolCallList", [])
             results = []
@@ -1776,14 +1830,7 @@ def vapi_server_url():
                 if caller_phone and isinstance(arguments, dict):
                     arguments["callerPhone"] = caller_phone
 
-                handler = TOOL_HANDLERS.get(fn_name)
-                if handler:
-                    try:
-                        result = handler(arguments)
-                    except Exception as e:
-                        result = {"error": f"Error ejecutando {fn_name}: {str(e)}"}
-                else:
-                    result = {"error": f"Función no reconocida: {fn_name}"}
+                result = _ejecutar_tool(fn_name, arguments, message, call_id_v18, arm, es_entrante)
 
                 results.append({
                     "toolCallId": tc_id,
@@ -1806,14 +1853,7 @@ def vapi_server_url():
             if caller_phone and isinstance(arguments, dict):
                 arguments["callerPhone"] = caller_phone
 
-            handler = TOOL_HANDLERS.get(fn_name)
-            if handler:
-                try:
-                    result = handler(arguments)
-                except Exception as e:
-                    result = {"error": f"Error ejecutando {fn_name}: {str(e)}"}
-            else:
-                result = {"error": f"Función no reconocida: {fn_name}"}
+            result = _ejecutar_tool(fn_name, arguments, message, call_id_v18, arm, es_entrante)
 
             return jsonify({"result": json.dumps(result, ensure_ascii=False)}), 200, cors
 

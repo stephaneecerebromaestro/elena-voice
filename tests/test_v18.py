@@ -1,0 +1,291 @@
+"""test_v18.py — varas de v18. Cada guarda lleva CONTROL POSITIVO (LL-182): se prueba que BLOQUEA lo que
+debe bloquear, no solo que deja pasar lo bueno. Sin red: GHL va con dobles.
+"""
+import os
+import sys
+import pathlib
+from datetime import datetime, timedelta
+
+import pytest
+import pytz
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import v18  # noqa: E402
+
+TZ = pytz.timezone("America/New_York")
+DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+             "septiembre", "octubre", "noviembre", "diciembre"]
+
+
+class GHLFalso:
+    """Doble de GHL: registra lo que se le pide y no sale a la red."""
+
+    def __init__(self, contacto=None, citas=None):
+        self.tags, self.campos, self.notas, self.puts, self.posts = [], {}, [], [], []
+        self.contacto = contacto or {}
+        self.citas = citas or []
+
+    def get(self, path, params=None, contacts_version=False):
+        if path.endswith("/appointments"):
+            return {"events": self.citas}
+        return {"contact": self.contacto}
+
+    def post(self, path, data, contacts_version=False):
+        self.posts.append((path, data))
+        return {"ok": True}
+
+    def put(self, path, data):
+        self.puts.append((path, data))
+        return {"ok": True}
+
+    def tag(self, cid, tag):
+        self.tags.append(tag)
+        return True
+
+    def campo(self, cid, k, v):
+        self.campos[k] = v
+        return True
+
+    def nota(self, cid, body):
+        self.notas.append(body)
+        return True
+
+
+@pytest.fixture(autouse=True)
+def limpio():
+    v18._slots.clear(); v18._confirmado.clear(); v18._turnos.clear()
+    os.environ.pop("ELENA_PROMETE_HORA", None)
+    os.environ.pop("ELENA_ENVIAR_INFO", None)
+    yield
+
+
+def cablear(g, encontrada=True):
+    v18.wire(TZ=TZ, DAYS_ES=DAYS_ES, MONTHS_ES=MONTHS_ES,
+             ghl_v2_get=g.get, ghl_v2_post=g.post, ghl_v2_put=g.put,
+             handle_get_contact=lambda a: {"found": encontrada, "contactId": "C1"},
+             _add_tag_to_contact=g.tag, _update_contact_custom_field=g.campo,
+             _add_note_to_contact=g.nota)
+    return g
+
+
+# ── hora en palabras ──────────────────────────────────────────────────────────────────────────
+def test_hora_en_palabras():
+    cablear(GHLFalso())
+    assert v18.hora_en_palabras(TZ.localize(datetime(2026, 10, 6, 10, 0))) == "diez de la mañana"
+    assert v18.hora_en_palabras(TZ.localize(datetime(2026, 10, 6, 17, 30))) == "cinco y media de la tarde"
+    assert v18.hora_en_palabras(TZ.localize(datetime(2026, 10, 6, 12, 15))) == "doce y cuarto de la tarde"
+
+
+# ── gate de reserva (control positivo: sin confirmar NO se reserva) ────────────────────────────
+def test_reserva_sin_confirmar_se_bloquea():
+    cablear(GHLFalso())
+    v18.recordar_slots("call1", {"slots": ["2026-10-07T10:00:00-04:00"]})
+    ok, motivo = v18.gate_reserva({"startTime": "2026-10-07T10:00:00-04:00"}, "call1")
+    assert ok is False and motivo == "sin_confirmar_horario"
+
+
+def test_reserva_con_confirmacion_pasa():
+    cablear(GHLFalso())
+    v18.recordar_slots("call1", {"slots": ["2026-10-07T10:00:00-04:00"]})
+    v18.handle_confirmar_horario({"startTime": "2026-10-07T10:00:00-04:00", "_call_id": "call1"})
+    ok, motivo = v18.gate_reserva({"startTime": "2026-10-07T10:00:00-04:00"}, "call1")
+    assert ok is True and motivo == ""
+
+
+def test_reserva_en_horario_no_ofrecido_se_bloquea():
+    cablear(GHLFalso())
+    v18.recordar_slots("call1", {"slots": ["2026-10-07T10:00:00-04:00"]})
+    ok, motivo = v18.gate_reserva({"startTime": "2026-10-07T16:00:00-04:00"}, "call1")
+    assert ok is False and motivo == "horario_no_ofrecido"
+
+
+def test_confirmar_horario_rechaza_el_que_no_se_ofrecio():
+    cablear(GHLFalso())
+    v18.recordar_slots("call1", {"slots": ["2026-10-07T10:00:00-04:00"]})
+    r = v18.handle_confirmar_horario({"startTime": "2026-10-07T20:00:00-04:00", "_call_id": "call1"})
+    assert r["success"] is False and "revisar la agenda" in r["frase"]
+
+
+# ── gate de buzón ─────────────────────────────────────────────────────────────────────────────
+MSG_BUZON = {"artifact": {"messages": [{"role": "bot", "message": "Hola, habla Elena"},
+                                       {"role": "user", "message": "sí"}]}}
+MSG_HABLA = {"artifact": {"messages": [{"role": "bot", "message": "Hola"},
+                                       {"role": "user", "message": "sí mira cuéntame del precio"}]}}
+
+
+def test_buzon_bloquea_accion_en_brazo_b():
+    cablear(GHLFalso())
+    ok, motivo = v18.gate_buzon("create_booking", MSG_BUZON, "c1", "b")
+    assert ok is False and motivo == "no_permitido_en_buzon"
+
+
+def test_buzon_deja_pasar_si_la_paciente_hablo():
+    cablear(GHLFalso())
+    ok, _ = v18.gate_buzon("create_booking", MSG_HABLA, "c2", "b")
+    assert ok is True
+
+
+def test_lectura_nunca_se_bloquea():
+    cablear(GHLFalso())
+    for tool in ("contexto_paciente", "get_contact", "check_availability"):
+        assert v18.gate_buzon(tool, MSG_BUZON, "c3", "b")[0] is True
+
+
+def test_sin_transcripto_no_bloquea_pero_lo_dice():
+    cablear(GHLFalso())
+    ok, motivo = v18.gate_buzon("create_booking", {}, "c4", "b")
+    assert ok is True and motivo == "sin_datos_de_transcripto"
+
+
+def test_produccion_arm_a_no_cambia_pero_pedir_persona_si():
+    """El brazo A queda EXACTAMENTE como v17.57 para la reserva; `pedir_persona` se protege siempre."""
+    cablear(GHLFalso())
+    assert v18.gate_buzon("create_booking", MSG_BUZON, "c5", "a")[0] is True
+    assert v18.gate_buzon("pedir_persona", MSG_BUZON, "c5", "a")[0] is False
+    assert v18.gate_buzon("request_human_handoff", MSG_BUZON, "c5", "a")[0] is False
+
+
+# ── programar_llamada ─────────────────────────────────────────────────────────────────────────
+def test_programar_en_20_minutos():
+    g = cablear(GHLFalso())
+    cuando = datetime.now(TZ) + timedelta(minutes=20)
+    if cuando.hour < 8 or cuando.hour >= 20 or cuando.weekday() == 6:
+        pytest.skip("la hora de la corrida cae fuera de la ventana; cubierto por los tests de ajuste")
+    r = v18.handle_programar_llamada({"fecha_hora_iso": cuando.isoformat(), "callerPhone": "+1786"})
+    assert r["success"] and r["hours"] == 2 and r["ajustado"] is False
+    assert g.campos["elena_callback_time"].startswith(cuando.strftime("%Y-%m-%dT%H"))
+    assert g.campos["elena_callback_hours"] == "2"
+
+
+def test_programar_de_noche_se_mueve_a_la_manana():
+    g = cablear(GHLFalso())
+    manana_11pm = (datetime.now(TZ) + timedelta(days=1)).replace(hour=23, minute=0, second=0, microsecond=0)
+    r = v18.handle_programar_llamada({"fecha_hora_iso": manana_11pm.isoformat(), "callerPhone": "+1786"})
+    assert r["success"] and r["ajustado"] is True
+    assert "T10:00" in g.campos["elena_callback_time"]
+    assert any("ajustado al horario de la clínica" in n for n in g.notas)
+
+
+def test_programar_en_domingo_se_mueve_al_lunes():
+    g = cablear(GHLFalso())
+    d = datetime.now(TZ) + timedelta(days=1)
+    while d.weekday() != 6:
+        d += timedelta(days=1)
+    r = v18.handle_programar_llamada({"fecha_hora_iso": d.replace(hour=11, minute=0).isoformat(),
+                                      "callerPhone": "+1786"})
+    guardado = datetime.fromisoformat(g.campos["elena_callback_time"])
+    assert r["ajustado"] is True and guardado.weekday() == 0
+
+
+def test_programar_mas_de_60_dias_se_rechaza():
+    cablear(GHLFalso())
+    r = v18.handle_programar_llamada({"fecha_hora_iso": (datetime.now(TZ) + timedelta(days=90)).isoformat()})
+    assert r["success"] is False and "muy lejos" in r["frase"]
+
+
+def test_fecha_basura_no_rompe():
+    cablear(GHLFalso())
+    r = v18.handle_programar_llamada({"fecha_hora_iso": "el jueves"})
+    assert r["success"] is False and "qué día y a qué hora" in r["frase"]
+
+
+def test_la_frase_no_promete_hora_hasta_que_ghl_la_cumpla():
+    """CONTROL POSITIVO del hallazgo del lector frío: apagado el flag, Elena NO dice la hora exacta."""
+    cablear(GHLFalso())
+    manana_5pm = (datetime.now(TZ) + timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
+    r = v18.handle_programar_llamada({"fecha_hora_iso": manana_5pm.isoformat(), "callerPhone": "+1786"})
+    assert "a las" not in r["frase"] and "mañana" in r["frase"]
+    os.environ["ELENA_PROMETE_HORA"] = "1"
+    r2 = v18.handle_programar_llamada({"fecha_hora_iso": manana_5pm.isoformat(), "callerPhone": "+1786"})
+    assert "a las cinco de la tarde" in r2["frase"]
+
+
+# ── registrar_baja ────────────────────────────────────────────────────────────────────────────
+def test_baja_no_llamar_aplica_tag_dnd_y_nota():
+    g = cablear(GHLFalso())
+    r = v18.handle_registrar_baja({"motivo": "no_llamar", "callerPhone": "+1786", "_call_id": "x1"})
+    assert r["success"] and "no te volvemos a llamar" in r["frase"]
+    assert "no_contactar" in g.tags and "baja_no_llamar" in g.tags
+    assert g.puts and g.puts[0][1] == {"dnd": True}
+    assert any("BAJA registrada por Elena" in n for n in g.notas)
+
+
+def test_baja_no_interesa_no_pone_dnd():
+    g = cablear(GHLFalso())
+    v18.handle_registrar_baja({"motivo": "no_interesa", "callerPhone": "+1786"})
+    assert "no_contactar" in g.tags and not g.puts
+
+
+def test_baja_sin_ficha_no_miente():
+    cablear(GHLFalso(), encontrada=False)
+    r = v18.handle_registrar_baja({"motivo": "no_llamar", "callerPhone": "+1786"})
+    assert r["success"] is False and "No encontré tu ficha" in r["message"]
+
+
+# ── pedir_persona ─────────────────────────────────────────────────────────────────────────────
+def test_pedir_persona_crea_tarea_y_nota():
+    g = cablear(GHLFalso())
+    r = v18.handle_pedir_persona({"motivo": "quiere hablar con Laury", "cuando": "mañana en la mañana",
+                                  "callerPhone": "+1786", "_call_id": "x2"})
+    assert r["success"] and r["tarea_creada"] is True
+    assert g.posts[0][0] == "/contacts/C1/tasks"
+    assert any("PIDIÓ HABLAR CON UNA PERSONA" in n for n in g.notas)
+    assert "una persona" in r["frase"]
+
+
+def test_alias_de_la_tool_viva():
+    """request_human_handoff está registrada en Vapi y no tenía handler: el alias la arregla."""
+    assert v18.TOOLS["request_human_handoff"] is v18.handle_pedir_persona
+
+
+# ── contexto_paciente ─────────────────────────────────────────────────────────────────────────
+def test_contexto_segmento_nuevo():
+    hace_3d = (datetime.now(TZ) - timedelta(days=3)).isoformat()
+    g = cablear(GHLFalso(contacto={"firstName": "Ana", "tags": ["botox_lead"], "dateAdded": hace_3d,
+                                   "customFields": [{"key": "contact.elena_language", "value": "es"}]}))
+    c = v18.handle_contexto_paciente({"callerPhone": "+1786"})
+    assert c["segmento"] == "nuevo" and c["nombre"] == "Ana"
+    assert c["tratamiento_origen"] == "botox_lead" and c["idioma_previo"] == "es"
+
+
+def test_contexto_segmento_base_vieja_y_no_contactar():
+    hace_200d = (datetime.now(TZ) - timedelta(days=200)).isoformat()
+    cablear(GHLFalso(contacto={"tags": ["no_contactar"], "dateAdded": hace_200d, "customFields": []}))
+    c = v18.handle_contexto_paciente({"callerPhone": "+1786"})
+    assert c["segmento"] == "base_vieja" and c["no_contactar"] is True
+
+
+def test_contexto_con_cita_futura_manda_sobre_el_resto():
+    manana = (datetime.now(TZ) + timedelta(days=1)).replace(hour=11, minute=0)
+    g = cablear(GHLFalso(contacto={"tags": ["lista_sms"], "dateAdded": datetime.now(TZ).isoformat(),
+                                   "customFields": []},
+                         citas=[{"startTime": manana.isoformat(), "appointmentStatus": "confirmed"}]))
+    c = v18.handle_contexto_paciente({"callerPhone": "+1786"})
+    assert c["segmento"] == "con_cita" and c["cita_futura"]["estado"] == "confirmed"
+    assert "mañana a las once" in c["cita_futura"]["cuando"]
+
+
+def test_contexto_ignora_cita_cancelada():
+    manana = (datetime.now(TZ) + timedelta(days=1)).replace(hour=11, minute=0)
+    cablear(GHLFalso(contacto={"tags": [], "dateAdded": datetime.now(TZ).isoformat(), "customFields": []},
+                     citas=[{"startTime": manana.isoformat(), "appointmentStatus": "cancelled"}]))
+    c = v18.handle_contexto_paciente({"callerPhone": "+1786"})
+    assert c["cita_futura"] is None and c["segmento"] == "nuevo"
+
+
+# ── enviar_info (control positivo: apagado NO manda nada) ──────────────────────────────────────
+def test_enviar_info_apagado_no_manda():
+    g = cablear(GHLFalso())
+    r = v18.handle_enviar_info({"tipo": "direccion", "callerPhone": "+1786"})
+    assert r["enviado"] is False and g.posts == []
+    assert "Ponce de León" in r["frase"]
+
+
+def test_enviar_info_encendido_manda_una_sola_vez():
+    os.environ["ELENA_ENVIAR_INFO"] = "1"
+    g = cablear(GHLFalso(contacto={"firstName": "Ana"}))
+    r = v18.handle_enviar_info({"tipo": "direccion", "callerPhone": "+1786"})
+    assert r["enviado"] is True and len(g.posts) == 1
+    assert g.posts[0][0] == "/conversations/messages"
+    assert "Ana" in g.posts[0][1]["message"] and "Suite 302" in g.posts[0][1]["message"]
