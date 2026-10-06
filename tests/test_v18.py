@@ -2,6 +2,7 @@
 debe bloquear, no solo que deja pasar lo bueno. Sin red: GHL va con dobles.
 """
 import os
+import re
 import sys
 import pathlib
 from datetime import datetime, timedelta
@@ -154,7 +155,7 @@ def test_programar_en_20_minutos():
         pytest.skip("la hora de la corrida cae fuera de la ventana; cubierto por los tests de ajuste")
     r = v18.handle_programar_llamada({"fecha_hora_iso": cuando.isoformat(), "callerPhone": "+1786"})
     assert r["success"] and r["hours"] == 2 and r["ajustado"] is False
-    assert g.campos["elena_callback_time"].startswith(cuando.strftime("%Y-%m-%dT%H"))
+    assert g.campos["elena_callback_time"].startswith(cuando.strftime("%Y-%m-%d %H"))
     assert g.campos["elena_callback_hours"] == "2"
 
 
@@ -163,7 +164,7 @@ def test_programar_de_noche_se_mueve_a_la_manana():
     manana_11pm = (datetime.now(TZ) + timedelta(days=1)).replace(hour=23, minute=0, second=0, microsecond=0)
     r = v18.handle_programar_llamada({"fecha_hora_iso": manana_11pm.isoformat(), "callerPhone": "+1786"})
     assert r["success"] and r["ajustado"] is True
-    assert "T10:00" in g.campos["elena_callback_time"]
+    assert g.campos["elena_callback_time"].endswith(" 10:00:00")
     assert any("ajustado al horario de la clínica" in n for n in g.notas)
 
 
@@ -199,6 +200,58 @@ def test_la_frase_no_promete_hora_hasta_que_ghl_la_cumpla():
     os.environ["ELENA_PROMETE_HORA"] = "1"
     r2 = v18.handle_programar_llamada({"fecha_hora_iso": manana_5pm.isoformat(), "callerPhone": "+1786"})
     assert "a las cinco de la tarde" in r2["frase"]
+
+
+# ── elena_callback_time en el formato que GHL entiende (F3a, medido 2026-10-06) ───────────────
+# Con zona escrita («-0400» / «-04:00») el Wait dinámico de GHL esperó 4 h de más; sin zona acertó al minuto.
+_ZONA = re.compile(r"(?:[+-]\d{2}:?\d{2}|Z)$")
+
+
+def _tiene_zona(valor):
+    return bool(_ZONA.search(valor.strip()))
+
+
+@pytest.mark.parametrize("valor", ["2026-10-06T11:07:00-0400", "2026-10-06T11:08:00-04:00",
+                                   "2026-10-06T15:07:00+00:00", "2026-10-06T15:07:00Z"])
+def test_control_positivo_el_detector_de_zona_caza(valor):
+    """Los formatos que GHL desplazó 4 h tienen que delatarse; si no, los tests de abajo no prueban nada."""
+    assert _tiene_zona(valor)
+
+
+def test_control_negativo_la_hora_local_no_tiene_zona():
+    assert not _tiene_zona("2026-10-06 11:09:00")
+
+
+def test_programar_escribe_hora_local_sin_zona():
+    g = cablear(GHLFalso())
+    d = datetime.now(TZ) + timedelta(days=1)
+    while d.weekday() in (5, 6):   # entre semana: 15:30 cae dentro del horario y no se ajusta
+        d += timedelta(days=1)
+    pedido = d.replace(hour=15, minute=30, second=0, microsecond=0)
+    r = v18.handle_programar_llamada({"fecha_hora_iso": pedido.isoformat(), "callerPhone": "+1786"})
+    guardado = g.campos["elena_callback_time"]
+    assert r["success"] and not _tiene_zona(guardado), guardado
+    assert guardado == pedido.strftime("%Y-%m-%d 15:30:00")
+
+
+def test_hora_para_ghl_pasa_a_miami_con_el_cambio_de_horario():
+    cablear(GHLFalso())
+    assert v18.hora_para_ghl(pytz.utc.localize(datetime(2026, 10, 6, 15, 9))) == "2026-10-06 11:09:00"  # EDT
+    assert v18.hora_para_ghl(pytz.utc.localize(datetime(2026, 12, 1, 15, 0))) == "2026-12-01 10:00:00"  # EST
+
+
+def test_schedule_callback_de_produccion_tambien_escribe_sin_zona(monkeypatch):
+    """La tool viva del brazo A escribe el mismo campo: misma regla."""
+    import app as flask_app
+    escritos = {}
+    monkeypatch.setattr(flask_app, "handle_get_contact", lambda a: {"found": True, "contactId": "C1"})
+    monkeypatch.setattr(flask_app, "_update_contact_custom_field",
+                        lambda cid, k, v: escritos.__setitem__(k, v) or True)
+    r = flask_app.handle_schedule_callback({"hours": 4, "callerPhone": "+17865550100"})
+    guardado = escritos["elena_callback_time"]
+    assert r["success"] and not _tiene_zona(guardado), guardado
+    esperado = (datetime.now(TZ) + timedelta(hours=4)).replace(tzinfo=None)
+    assert abs((datetime.strptime(guardado, "%Y-%m-%d %H:%M:%S") - esperado).total_seconds()) < 120
 
 
 # ── registrar_baja ────────────────────────────────────────────────────────────────────────────

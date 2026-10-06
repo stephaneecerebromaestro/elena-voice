@@ -244,6 +244,17 @@ def _bucket(horas):
     return 120
 
 
+def hora_para_ghl(dt):
+    """Lo que se guarda en `elena_callback_time`: hora LOCAL de Miami SIN zona («2026-10-06 11:09:00»).
+
+    Medido en GHL el 2026-10-06 (workflow de prueba F3a, Wait «Until a specific date/time» en modo Dynamic):
+    con la zona escrita («…-0400» o «…-04:00») GHL la aplica DOS veces y espera 4 h de más (5 h en invierno);
+    sin zona la toma en la zona de la cuenta (America/New_York) y suelta al minuto. Por eso aquí nunca va %z.
+    """
+    local = D["TZ"].normalize(dt.astimezone(D["TZ"]))
+    return local.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def handle_programar_llamada(args):
     ahora = datetime.now(D["TZ"])
     crudo = (args.get("fecha_hora_iso") or "").strip()
@@ -266,8 +277,7 @@ def handle_programar_llamada(args):
     cid = _contacto(args)
     escrito = {}
     if cid:
-        iso = dt.strftime("%Y-%m-%dT%H:%M:%S%z")
-        escrito["elena_callback_time"] = bool(D["_update_contact_custom_field"](cid, "elena_callback_time", iso))
+        escrito["elena_callback_time"] = bool(D["_update_contact_custom_field"](cid, "elena_callback_time", hora_para_ghl(dt)))
         escrito["elena_callback_hours"] = bool(D["_update_contact_custom_field"](cid, "elena_callback_hours", str(bucket)))
         escrito["nota"] = bool(D["_add_note_to_contact"](
             cid, f"Pidió que la llamemos {cuando_en_palabras(dt, ahora)} ({dt.strftime('%Y-%m-%d %H:%M')} ET)"

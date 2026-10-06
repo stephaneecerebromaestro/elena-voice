@@ -202,7 +202,7 @@ NO_INTERESADO_PHRASES = [
     "no me interesa por ahora", "por ahora no me interesa",
 ]
 
-SERVER_VERSION = "v18.3"  # v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
+SERVER_VERSION = "v18.4"  # v18.4: elena_callback_time en hora local sin zona (GHL aplicaba la zona dos veces). v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
                            # FIX C2: Telegram independiente de Supabase — ARIA notifica aunque upsert falle
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
@@ -922,7 +922,8 @@ def handle_schedule_callback(args):
     The server:
     1. Validates and normalises hours to one of the four accepted values
     2. Calculates the exact callback timestamp (now + hours, Miami time)
-    3. Writes elena_callback_time (ISO) and elena_callback_hours ('2','4','12','120') to GHL
+    3. Writes elena_callback_time (Miami local time, NO offset: "YYYY-MM-DD HH:MM:SS" — GHL's dynamic
+       Wait double-applies an offset) and elena_callback_hours ('2','4','12','120') to GHL
     4. Writes elena_last_outcome = 'llamar_luego' and adds the GHL trigger tag
     """
     hours_raw = args.get("hours", 2)
@@ -951,6 +952,8 @@ def handle_schedule_callback(args):
     now_miami = datetime.now(TZ)
     callback_dt = now_miami + timedelta(hours=hours)
     callback_iso = callback_dt.strftime("%Y-%m-%dT%H:%M:%S%z")  # e.g. 2026-03-26T17:30:00-0400
+    # A GHL va la hora LOCAL sin zona: con «-0400» su Wait dinámico espera 4 h de más (medido 2026-10-06, v18.hora_para_ghl).
+    callback_ghl = TZ.normalize(callback_dt).strftime("%Y-%m-%d %H:%M:%S")
     callback_human = (
         f"{DAYS_ES[callback_dt.weekday()]} {callback_dt.day} de "
         f"{MONTHS_ES[callback_dt.month-1]} a las "
@@ -972,9 +975,9 @@ def handle_schedule_callback(args):
         # intentionally NOT written here — they are written by _process_end_of_call
         # after the call ends. Writing them here caused a race condition where the
         # GHL workflow fired before the end-of-call fields were ready.
-        _update_contact_custom_field(contact_id, "elena_callback_time", callback_iso)
+        _update_contact_custom_field(contact_id, "elena_callback_time", callback_ghl)
         _update_contact_custom_field(contact_id, "elena_callback_hours", str(hours))  # FIX L: GHL workflow reads this to decide 2h vs 4h wait
-        print(f"[schedule_callback] Contact {contact_id} callback fields written: {callback_iso} (hours={hours})")
+        print(f"[schedule_callback] Contact {contact_id} callback fields written: {callback_ghl} ET (hours={hours})")
         return {
             "success": True,
             "hours": hours,
