@@ -202,7 +202,7 @@ NO_INTERESADO_PHRASES = [
     "no me interesa por ahora", "por ahora no me interesa",
 ]
 
-SERVER_VERSION = "v18.5"  # v18.5: fin de llamada escribe SIEMPRE elena_callback_time fresca en «llamar luego». v18.4: elena_callback_time en hora local sin zona (GHL aplicaba la zona dos veces). v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
+SERVER_VERSION = "v18.6"  # v18.6: promesa de hora ON por defecto (F3a en los 6 workflows) + callbackHuman en palabras. v18.5: fin de llamada escribe SIEMPRE elena_callback_time fresca en «llamar luego». v18.4: elena_callback_time en hora local sin zona (GHL aplicaba la zona dos veces). v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
                            # FIX C2: Telegram independiente de Supabase — ARIA notifica aunque upsert falle
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
@@ -954,11 +954,10 @@ def handle_schedule_callback(args):
     callback_iso = callback_dt.strftime("%Y-%m-%dT%H:%M:%S%z")  # e.g. 2026-03-26T17:30:00-0400
     # A GHL va la hora LOCAL sin zona: con «-0400» su Wait dinámico espera 4 h de más (medido 2026-10-06, v18.hora_para_ghl).
     callback_ghl = TZ.normalize(callback_dt).strftime("%Y-%m-%d %H:%M:%S")
-    callback_human = (
-        f"{DAYS_ES[callback_dt.weekday()]} {callback_dt.day} de "
-        f"{MONTHS_ES[callback_dt.month-1]} a las "
-        f"{callback_dt.strftime('%I:%M %p').lstrip('0').lower()}"
-    )
+    # v18.6: en PALABRAS, no «3:05 pm» — la voz leía «a las tres o cinco» (llamada real de Juan, 2026-10-06 13:05).
+    # Y sin fecha larga: «hoy a las tres y cinco de la tarde», como ya hace programar_llamada.
+    import v18 as _v18
+    callback_human = _v18.cuando_en_palabras(callback_dt, now_miami)
 
     # Find GHL contact by caller phone and write fields
     contact_id = ""
@@ -983,7 +982,7 @@ def handle_schedule_callback(args):
             "hours": hours,
             "callbackTime": callback_iso,
             "callbackHuman": callback_human,
-            "message": f"Perfecto. Te llamo el {callback_human} (hora de Miami)."
+            "message": f"Perfecto, te llamo {callback_human}."
         }
     else:
         # No contact found — still return success so Elena can confirm to client
@@ -994,7 +993,7 @@ def handle_schedule_callback(args):
             "hours": hours,
             "callbackTime": callback_iso,
             "callbackHuman": callback_human,
-            "message": f"Perfecto. Te llamo el {callback_human} (hora de Miami)."
+            "message": f"Perfecto, te llamo {callback_human}."
         }
 
 

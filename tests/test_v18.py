@@ -191,15 +191,40 @@ def test_fecha_basura_no_rompe():
     assert r["success"] is False and "qué día y a qué hora" in r["frase"]
 
 
-def test_la_frase_no_promete_hora_hasta_que_ghl_la_cumpla():
-    """CONTROL POSITIVO del hallazgo del lector frío: apagado el flag, Elena NO dice la hora exacta."""
+def test_la_frase_promete_la_hora_por_defecto_y_se_puede_apagar():
+    """v18.6: F3a está en los 6 workflows (GHL espera hasta la hora guardada), así que la promesa es verdad y va ON
+    por defecto. CONTROL POSITIVO: con ELENA_PROMETE_HORA=0 Elena vuelve a decir solo la franja."""
     cablear(GHLFalso())
     manana_5pm = (datetime.now(TZ) + timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
     r = v18.handle_programar_llamada({"fecha_hora_iso": manana_5pm.isoformat(), "callerPhone": "+1786"})
-    assert "a las" not in r["frase"] and "mañana" in r["frase"]
-    os.environ["ELENA_PROMETE_HORA"] = "1"
+    assert "a las cinco de la tarde" in r["frase"], r["frase"]
+    os.environ["ELENA_PROMETE_HORA"] = "0"
     r2 = v18.handle_programar_llamada({"fecha_hora_iso": manana_5pm.isoformat(), "callerPhone": "+1786"})
-    assert "a las cinco de la tarde" in r2["frase"]
+    assert "a las" not in r2["frase"] and "mañana" in r2["frase"], r2["frase"]
+
+
+@pytest.mark.parametrize("minuto,esperado", [(5, "cinco"), (12, "doce"), (16, "dieciséis"), (20, "veinte"), (28, "veintiocho"),
+                                             (35, "treinta y cinco"), (41, "cuarenta y uno"), (59, "cincuenta y nueve")])
+def test_minutos_en_palabras(minuto, esperado):
+    assert v18.minutos_en_palabras(minuto) == esperado
+    assert v18.hora_en_palabras(TZ.localize(datetime(2026, 10, 6, 15, minuto))) == f"tres y {esperado} de la tarde"
+
+
+def test_hora_en_palabras_nunca_lleva_cifras():
+    for m in range(60):
+        assert not re.search(r"\d", v18.hora_en_palabras(TZ.localize(datetime(2026, 10, 6, 9, m)))), m
+
+
+def test_schedule_callback_dice_la_hora_en_palabras(monkeypatch):
+    """La Elena de hoy (brazo A) leía «3:05 pm» como «tres o cinco» (llamada real de Juan, 2026-10-06 13:05)."""
+    import app as flask_app
+    monkeypatch.setattr(flask_app, "handle_get_contact", lambda a: {"found": True, "contactId": "C1"})
+    monkeypatch.setattr(flask_app, "_update_contact_custom_field", lambda cid, k, v: True)
+    r = flask_app.handle_schedule_callback({"hours": 2, "callerPhone": "+17865550100"})
+    assert not re.search(r"\d", r["callbackHuman"]), r["callbackHuman"]        # ni «3:05» ni «6 de octubre»
+    assert "pm" not in r["callbackHuman"] and "am" not in r["callbackHuman"]
+    assert r["message"] == f"Perfecto, te llamo {r['callbackHuman']}."
+    assert r["callbackHuman"].startswith(("hoy ", "mañana ")) and " a la" in r["callbackHuman"]
 
 
 # ── elena_callback_time en el formato que GHL entiende (F3a, medido 2026-10-06) ───────────────

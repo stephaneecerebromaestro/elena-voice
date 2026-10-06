@@ -51,9 +51,10 @@ def wire(**deps):
 
 # ── banderas (todo lo que puede tocar a una paciente nace apagado) ────────────────────────────
 def promete_hora():
-    """ON solo cuando la rama de GHL del bot ya lee `elena_callback_time` (F3a). Apagado, Elena promete
-    la franja que la escalera de hoy sí cumple."""
-    return os.environ.get("ELENA_PROMETE_HORA", "0") == "1"
+    """ON por defecto desde v18.6 (2026-10-06): los 6 workflows de GHL ya esperan hasta `elena_callback_time`
+    (F3a, verificado con una llamada real: GHL programó 3:05:40 pm = lo que guardó Elena). Con
+    ELENA_PROMETE_HORA=0 Elena vuelve a prometer solo la franja (si algún día una escalera deja de cumplirla)."""
+    return os.environ.get("ELENA_PROMETE_HORA", "1") != "0"
 
 
 def enviar_info_activo():
@@ -105,12 +106,23 @@ def recordar_slots(call_id, resultado):
 _UNID = {1: "una", 2: "dos", 3: "tres", 4: "cuatro", 5: "cinco", 6: "seis", 7: "siete", 8: "ocho",
          9: "nueve", 10: "diez", 11: "once", 12: "doce"}
 _MIN = {0: "", 15: " y cuarto", 30: " y media", 45: " y cuarenta y cinco"}
+_NUM = {1: "uno", 2: "dos", 3: "tres", 4: "cuatro", 5: "cinco", 6: "seis", 7: "siete", 8: "ocho", 9: "nueve",
+        10: "diez", 11: "once", 12: "doce", 13: "trece", 14: "catorce", 15: "quince", 16: "dieciséis",
+        17: "diecisiete", 18: "dieciocho", 19: "diecinueve", 20: "veinte", 30: "treinta", 40: "cuarenta", 50: "cincuenta"}
+
+
+def minutos_en_palabras(m):
+    """1-59 en palabras («veintiocho», «treinta y cinco»): la voz leía «y 28» como cifra (v18.6)."""
+    if m in _NUM:
+        return _NUM[m]
+    dec, uni = divmod(m, 10)
+    return f"veinti{_NUM[uni]}" if dec == 2 else f"{_NUM[dec * 10]} y {_NUM[uni]}"
 
 
 def hora_en_palabras(dt):
     h12 = dt.hour % 12 or 12
     franja = "de la mañana" if dt.hour < 12 else ("de la tarde" if dt.hour < 19 else "de la noche")
-    minutos = _MIN.get(dt.minute, f" y {dt.minute}" if dt.minute else "")
+    minutos = _MIN.get(dt.minute, f" y {minutos_en_palabras(dt.minute)}" if dt.minute else "")
     return f"{_UNID[h12]}{minutos} {franja}"
 
 
