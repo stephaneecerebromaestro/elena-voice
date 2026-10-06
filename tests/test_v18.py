@@ -407,3 +407,55 @@ def test_articulo_de_la_hora():
     assert v18.a_las(TZ.localize(datetime(2026, 10, 6, 13, 30))) == "a la una y media de la tarde"
     assert v18.a_las(TZ.localize(datetime(2026, 10, 6, 1, 0))) == "a la una de la mañana"
     assert v18.a_las(TZ.localize(datetime(2026, 10, 6, 10, 0))) == "a las diez de la mañana"
+
+
+# ── gate_baja (v18.7): la baja solo con petición EXPLÍCITA (banco 6-oct, E9 pasadas 4 y 5) ──────────
+def _msg(*dichos):
+    return {"artifact": {"messages": [{"role": "bot", "message": "Hola, habla Elena"}] +
+                         [{"role": "user", "message": d} for d in dichos]}}
+
+
+@pytest.mark.parametrize("dichos", [
+    ("Hi. Who is this?",) * 6,                                     # P5: Elena la dio de baja por repetir esto
+    ("Sorry, I don't speak Spanish.",) * 5,                        # P4: ídem
+    ("Ok, I'll think about it, thanks, bye",),
+    ("Está bien, lo voy a pensar. Gracias.",),
+    ("Ahora no puedo, llámame en media hora",),                     # «llámame» NO es «no me llames»
+    ("¿Cuánto cuesta el botox?",),
+])
+def test_gate_baja_bloquea_sin_peticion_explicita(dichos):
+    ok, motivo, por_que = v18.gate_baja({"motivo": "no_llamar"}, _msg(*dichos))
+    assert not ok and por_que == "sin_pedido_explicito", (dichos, por_que)
+
+
+@pytest.mark.parametrize("dicho,motivo_final", [
+    ("No me llamen más, por favor, quítenme de la lista", "no_llamar"),
+    ("no me vuelvas a llamar", "no_llamar"),
+    ("Please don't call me again", "no_llamar"),
+    ("Take me off your list", "no_llamar"),
+    ("Stop calling me", "no_llamar"),
+])
+def test_gate_baja_deja_pasar_la_peticion_explicita(dicho, motivo_final):
+    ok, motivo, _ = v18.gate_baja({"motivo": "no_llamar"}, _msg(dicho))
+    assert ok and motivo == motivo_final, dicho
+
+
+def test_gate_baja_no_me_interesa_es_baja_sin_dnd():
+    ok, motivo, por_que = v18.gate_baja({"motivo": "no_llamar"}, _msg("No, no me interesa, gracias"))
+    assert ok and motivo == "no_interesa" and por_que == "motivo_rebajado"
+
+
+def test_gate_baja_sin_transcripto_no_aplica():
+    ok, _, por_que = v18.gate_baja({"motivo": "no_llamar"}, {})
+    assert not ok and por_que == "sin_transcripto"
+
+
+def test_ejecutar_tool_no_aplica_la_baja_sin_peticion(monkeypatch):
+    """Control de extremo a extremo por el despachador real: sin petición explícita, el handler NI SE LLAMA."""
+    import app as flask_app
+    llamado = []
+    monkeypatch.setitem(flask_app.TOOL_HANDLERS, "registrar_baja", lambda a: llamado.append(a) or {"success": True})
+    r = flask_app._ejecutar_tool("registrar_baja", {"motivo": "no_llamar"}, _msg("Hi. Who is this?", "Hi. Who is this?"), "c-test", "b", False)
+    assert r["success"] is False and r["bloqueado"] == "sin_pedido_explicito" and not llamado
+    r2 = flask_app._ejecutar_tool("registrar_baja", {"motivo": "no_llamar"}, _msg("No me llamen más"), "c-test2", "b", False)
+    assert llamado and llamado[0]["motivo"] == "no_llamar"

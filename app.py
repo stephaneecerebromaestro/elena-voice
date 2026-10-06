@@ -202,7 +202,7 @@ NO_INTERESADO_PHRASES = [
     "no me interesa por ahora", "por ahora no me interesa",
 ]
 
-SERVER_VERSION = "v18.6"  # v18.6: promesa de hora ON por defecto (F3a en los 6 workflows) + callbackHuman en palabras. v18.5: fin de llamada escribe SIEMPRE elena_callback_time fresca en «llamar luego». v18.4: elena_callback_time en hora local sin zona (GHL aplicaba la zona dos veces). v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
+SERVER_VERSION = "v18.7"  # v18.7: registrar_baja solo con petición explícita de la paciente (gate_baja). v18.6: promesa de hora ON por defecto (F3a en los 6 workflows) + callbackHuman en palabras. v18.5: fin de llamada escribe SIEMPRE elena_callback_time fresca en «llamar luego». v18.4: elena_callback_time en hora local sin zona (GHL aplicaba la zona dos veces). v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
                            # FIX C2: Telegram independiente de Supabase — ARIA notifica aunque upsert falle
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
@@ -1774,6 +1774,16 @@ def _ejecutar_tool(fn_name, arguments, message, call_id, arm, entrante):
         print(f"[v18][gate_buzon] bloqueada {fn_name} call={call_id} motivo={motivo}", flush=True)
         return {"error": "no_permitido", "motivo": motivo,
                 "message": "No puedo hacer eso ahora mismo."}
+
+    if fn_name == "registrar_baja":
+        ok, motivo_final, por_que = v18.gate_baja(arguments, message)
+        if not ok:
+            print(f"[v18][gate_baja] NO aplicada call={call_id} motivo={por_que}", flush=True)
+            return {"success": False, "bloqueado": por_que, "frase": v18.FRASE_BAJA_DUDOSA,
+                    "message": v18.FRASE_BAJA_DUDOSA}
+        if por_que:
+            print(f"[v18][gate_baja] {por_que} call={call_id} → {motivo_final}", flush=True)
+        arguments["motivo"] = motivo_final
 
     if fn_name == "create_booking" and v18.guardas_activas(arm):
         ok, por_que = v18.gate_reserva(arguments, call_id)

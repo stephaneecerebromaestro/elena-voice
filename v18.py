@@ -478,6 +478,43 @@ def gate_buzon(fn_name, message, call_id, arm):
     return True, ("sin_datos_de_transcripto" if hablo is None else "")
 
 
+# ── gate de baja (v18.7): una baja bloquea a la paciente PARA SIEMPRE (no_contactar + DND) ──────────
+# Banco 2026-10-06 (pasadas 4 y 5, E9): Elena registró la baja ante «Hi, who is this?» repetido y ante
+# «Sorry, I don't speak Spanish» — sin que nadie pidiera no ser llamado — aunque el guion lo prohibía
+# expresamente. La prosa no lo arregla: se exige la petición EXPLÍCITA en lo que dijo la paciente.
+BAJA_NO_LLAMAR = re.compile(
+    r"no (me )?(vuelv\w+ a )?llam|no quiero que me (vuelv\w+ a )?llam|dej\w+ de llam|"
+    r"qu[ií]t\w*me|s[aá]qu?\w*me de|b[oó]rr\w* (mi|el) (n[uú]mero|tel)|de (su|la|tu) lista|"
+    r"don'?t (ever )?call|do not call|stop calling|remove me|take me off|unsubscribe|no more calls|lose my number",
+    re.IGNORECASE)
+BAJA_NO_INTERESA = re.compile(
+    r"no me interesa|no estoy interesad|no quiero (nada|eso)|ya (te|le) dije que no|ya dije que no|"
+    r"not interested|i'?m not interested|no thanks?,? not", re.IGNORECASE)
+FRASE_BAJA_DUDOSA = ("Perdona, no te entendí bien. ¿Prefieres que no te volvamos a llamar, o te llamo otro día "
+                     "que te venga mejor?")
+
+
+def palabras_de_la_paciente(message):
+    msgs = ((message.get("artifact") or {}).get("messages")
+            or ((message.get("call") or {}).get("artifact") or {}).get("messages") or [])
+    return " ".join((m.get("message") or m.get("content") or "") for m in msgs
+                    if (m.get("role") or "").lower() in ("user", "customer", "human"))
+
+
+def gate_baja(args, message):
+    """(permitido, motivo_final, por_que). Sin transcripto no se puede comprobar → NO se aplica la baja (al
+    revés que el gate de buzón: aquí el error caro es bloquear a quien no lo pidió, no perder una acción)."""
+    dicho = palabras_de_la_paciente(message)
+    if not dicho.strip():
+        return False, None, "sin_transcripto"
+    motivo = (args.get("motivo") or "no_interesa").strip().lower()
+    if BAJA_NO_LLAMAR.search(dicho):
+        return True, motivo, ""
+    if BAJA_NO_INTERESA.search(dicho):
+        return True, "no_interesa", ("motivo_rebajado" if motivo == "no_llamar" else "")   # sin DND si solo dijo «no me interesa»
+    return False, None, "sin_pedido_explicito"
+
+
 def gate_reserva(args, call_id):
     """(permitido, motivo) para `create_booking` en el brazo B: el horario tiene que ser uno de los
     ofrecidos en ESTA llamada y haber pasado por `confirmar_horario`."""
