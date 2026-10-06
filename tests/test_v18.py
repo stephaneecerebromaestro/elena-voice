@@ -254,6 +254,37 @@ def test_schedule_callback_de_produccion_tambien_escribe_sin_zona(monkeypatch):
     assert abs((datetime.strptime(guardado, "%Y-%m-%d %H:%M:%S") - esperado).total_seconds()) < 120
 
 
+# ── fin de llamada: «llamar luego» deja SIEMPRE una hora fresca (F3a, v18.5) ──────────────────
+def test_fin_de_llamada_usa_la_hora_de_schedule_callback():
+    import app as flask_app
+    assert flask_app._callback_time_para_ghl("2026-10-07T15:30:00-0400", 12) == "2026-10-07 15:30:00"
+
+
+def test_fin_de_llamada_usa_la_hora_de_programar_llamada():
+    import app as flask_app
+    assert flask_app._callback_time_para_ghl("2026-10-07T15:30:00-04:00", 12) == "2026-10-07 15:30:00"
+
+
+@pytest.mark.parametrize("sin_tool", ["", "basura", "2026-10-07 15:30:00"])
+def test_fin_de_llamada_sin_tool_valida_pone_ahora_mas_horas(sin_tool):
+    """Por palabras clave no hay tool: antes el campo quedaba vacío o viejo y GHL habría llamado al instante."""
+    import app as flask_app
+    guardado = flask_app._callback_time_para_ghl(sin_tool, 4)
+    assert not _tiene_zona(guardado), guardado
+    esperado = (datetime.now(TZ) + timedelta(hours=4)).replace(tzinfo=None)
+    assert abs((datetime.strptime(guardado, "%Y-%m-%d %H:%M:%S") - esperado).total_seconds()) < 120
+
+
+def test_fin_de_llamada_escribe_la_hora_en_la_rama_llamar_luego():
+    """Guarda de estructura: el bloque que escribe elena_callback_hours también escribe elena_callback_time.
+    Control positivo: quitando esa escritura del código (como estaba hasta v18.4) este test falla."""
+    src = (pathlib.Path(__file__).resolve().parent.parent / "app.py").read_text()
+    i = src.index('if outcome == "llamar_luego" and callback_hours_confirmed > 0:')
+    bloque = src[i:i + 600]
+    assert '"elena_callback_hours"' in bloque and '"elena_callback_time"' in bloque
+    assert "_callback_time_para_ghl(callback_time_tool" in bloque
+
+
 # ── registrar_baja ────────────────────────────────────────────────────────────────────────────
 def test_baja_no_llamar_aplica_tag_dnd_y_nota():
     g = cablear(GHLFalso())

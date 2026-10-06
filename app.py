@@ -202,7 +202,7 @@ NO_INTERESADO_PHRASES = [
     "no me interesa por ahora", "por ahora no me interesa",
 ]
 
-SERVER_VERSION = "v18.4"  # v18.4: elena_callback_time en hora local sin zona (GHL aplicaba la zona dos veces). v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
+SERVER_VERSION = "v18.5"  # v18.5: fin de llamada escribe SIEMPRE elena_callback_time fresca en «llamar luego». v18.4: elena_callback_time en hora local sin zona (GHL aplicaba la zona dos veces). v18: tools nuevas (registrar_baja, pedir_persona, programar_llamada, confirmar_horario, contexto_paciente, enviar_info) + guardas por brazo (?arm=b). Ver v18.py
                            # FIX C2: Telegram independiente de Supabase — ARIA notifica aunque upsert falle
 
 # ─── Idempotency lock for create_contact ──────────────────────────────────────
@@ -1056,6 +1056,27 @@ def _parse_callback_hours(transcript_lower: str) -> int:
     return 12  # default: 12h
 
 
+def _callback_time_para_ghl(callback_time_tool: str, hours: int) -> str:
+    """F3a (2026-10-06): la hora que el Wait dinámico de GHL va a esperar, SIEMPRE fresca y sin zona.
+
+    Si en esta llamada la tool (schedule_callback / programar_llamada) devolvió su callbackTime, es esa;
+    si «llamar luego» salió solo por palabras clave (sin tool), es ahora + las horas detectadas. Antes,
+    en ese segundo caso, nadie escribía el campo y quedaba vacío o viejo: con el Wait dinámico, GHL
+    habría llamado al instante a quien acababa de pedir que la llamaran luego.
+    """
+    dt_cb = None
+    if callback_time_tool:
+        for parse in (datetime.fromisoformat, lambda s: datetime.strptime(s, "%Y-%m-%dT%H:%M:%S%z")):
+            try:
+                dt_cb = parse(callback_time_tool)
+                break
+            except ValueError:
+                continue
+    if dt_cb is None or dt_cb.tzinfo is None:
+        dt_cb = datetime.now(TZ) + timedelta(hours=hours)
+    return TZ.normalize(dt_cb.astimezone(TZ)).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _process_end_of_call(message):
     """
     Process end-of-call-report from Vapi.
@@ -1149,6 +1170,7 @@ def _process_end_of_call(message):
         booked_time = ""
         llamar_luego_confirmed = False  # FIX N: set True when schedule_callback succeeded
         callback_hours_confirmed = 0    # FIX N: hours value from schedule_callback result
+        callback_time_tool = ""         # F3a: callbackTime que devolvió la tool en esta llamada
         has_any_tool_call = False       # CRITICAL FIX: initialize at top scope — used in multiple
                                         # outcome branches. Without this, Python raises UnboundLocalError
                                         # in branches that don't go through silence-timed-out,
@@ -1163,7 +1185,7 @@ def _process_end_of_call(message):
                 """Given a parsed dict from a tool result, update agendo/llamar_luego flags.
                 FIX B: reschedule_appointment success (has newStartTime) also counts as agendo.
                 Returns True if agendo was set (caller should break)."""
-                nonlocal agendo, appointment_id, booked_time, llamar_luego_confirmed, callback_hours_confirmed
+                nonlocal agendo, appointment_id, booked_time, llamar_luego_confirmed, callback_hours_confirmed, callback_time_tool
                 if not isinstance(parsed, dict) or not parsed.get("success"):
                     return False
                 # create_booking success: has appointmentId (new booking)
@@ -1177,6 +1199,7 @@ def _process_end_of_call(message):
                 if parsed.get("hours") and parsed.get("callbackTime"):
                     llamar_luego_confirmed = True
                     callback_hours_confirmed = int(parsed.get("hours", 2))
+                    callback_time_tool = str(parsed.get("callbackTime", ""))
                 return False
 
             # Format 1: role=tool with JSON content (older Vapi format)
@@ -1622,6 +1645,9 @@ def _process_end_of_call(message):
             # wrote this field; now the end-of-call handler owns it to survive tool removal.
             if outcome == "llamar_luego" and callback_hours_confirmed > 0:
                 _update_contact_custom_field(contact_id, "elena_callback_hours", str(callback_hours_confirmed))
+                # F3a: la hora exacta junto a las horas, siempre fresca (ver _callback_time_para_ghl).
+                _update_contact_custom_field(contact_id, "elena_callback_time",
+                                             _callback_time_para_ghl(callback_time_tool, callback_hours_confirmed))
             if call_id:
                 _update_contact_custom_field(contact_id, "elena_call_id", call_id)
             if appointment_id:
