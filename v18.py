@@ -398,9 +398,10 @@ def handle_contexto_paciente(args):
 DIRECCION_VOZ = "cuatro seis cuatro nueve, Ponce de León, suite tres cero dos, Coral Gables"
 PLANTILLAS = {
     "direccion": ("Hola{nombre}, soy Elena de Laser Place Miami. Estamos en 4649 Ponce De Leon Blvd, "
-                  "Suite 302, Coral Gables FL 33146. Horario: lunes a viernes de 10 a 6 y sabados de 10 a 2."),
-    "horarios": ("Hola{nombre}, soy Elena de Laser Place Miami. Nuestro horario es lunes a viernes de 10 a 6 "
-                 "y sabados de 10 a 2. Cuando quieras, te agendamos tu evaluacion gratis."),
+                  "Suite 302, Coral Gables FL 33146. Horario: lunes, martes, miercoles y viernes de 10 a 6 y sabados de 10 a 2; "
+                  "jueves y domingos cerrado."),
+    "horarios": ("Hola{nombre}, soy Elena de Laser Place Miami. Nuestro horario es lunes, martes, miercoles y viernes de 10 a 6 "
+                 "y sabados de 10 a 2; jueves y domingos cerrado. Cuando quieras, te agendamos tu evaluacion gratis."),
 }
 
 
@@ -414,7 +415,7 @@ def handle_enviar_info(args):
     # DATOS-DISENO §8) y además sería mentir. Encendido, sí lo anuncia.
     dicho = (f"Estamos en {DIRECCION_VOZ}. Se aparca en la calle y nosotros te validamos el parqueo."
              if tipo == "direccion" else
-             "Abrimos de lunes a viernes de diez a seis, y sábados de diez a dos.")
+             "Abrimos lunes, martes, miércoles y viernes de diez a seis, y sábados de diez a dos. Los jueves y domingos no abrimos.")
     frase = ((f"Te lo mando ahora por mensaje. {dicho}") if enviar_info_activo() else dicho)
     if not enviar_info_activo():
         _log("enviar_info_apagado", {"contacto": cid, "tipo": tipo,
