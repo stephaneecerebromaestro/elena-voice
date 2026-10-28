@@ -87,8 +87,10 @@ stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 alerts = []
 for pid, w in week.items():
     h = hist.get(pid, {"snapshots": []})
-    prev = [s["connect_rate"] for s in h["snapshots"]]
-    avg = sum(prev) / len(prev) if prev else None
+    # La línea base solo cuenta semanas con volumen real, y hacen falta 3 (2026-10-28): el ≈5-oct avisó
+    # «posible SPAM» comparando 49% contra un «promedio» de 100% hecho con 2 semanas de 1 llamada cada una.
+    prev = [s["connect_rate"] for s in h["snapshots"] if s.get("total", 0) >= MIN_VOL]
+    avg = sum(prev) / len(prev) if len(prev) >= 3 else None
     flag = (avg is not None and w["total"] >= MIN_VOL and avg > 0 and w["connect_rate"] < DROP_FACTOR * avg)
     if flag:
         alerts.append(f"{w['num']}: connect {w['connect_rate']}% (prom {avg:.0f}%), {w['total']} llamadas")
