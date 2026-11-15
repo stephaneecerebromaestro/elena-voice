@@ -43,6 +43,16 @@ def vapi_number_map():
     return {n.get("id"): n.get("number", n.get("id")) for n in _vapi_get("phone-number?limit=50")}
 
 def tg(text):
+    # A5 del canal (Juan, 15-nov: «hazlo: apaga Telegram, incluidos los dos vigilantes de Elena»): con el interruptor
+    # puesto, el aviso va al buzón como P0 (suena en la app) y no a Telegram; si el buzón falla, sale por Telegram.
+    try:
+        import re as _re, sys as _sys
+        _sys.path.insert(0, "/root/stephanee/scripts")
+        import telegram_interruptor as _ti
+        if _ti.desviar("elena-voice:reputacion-numeros", "P0", _re.sub(r"<[^>]+>", "", text), dueno="elena-voice"):
+            return True
+    except Exception as _e:  # el interruptor nunca deja a Juan sin aviso
+        print("interruptor de Telegram no disponible:", _e)
     data = json.dumps({"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML"}).encode()
     r = urllib.request.Request(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
         data=data, headers={"Content-Type": "application/json"})
@@ -87,8 +97,10 @@ stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 alerts = []
 for pid, w in week.items():
     h = hist.get(pid, {"snapshots": []})
-    prev = [s["connect_rate"] for s in h["snapshots"]]
-    avg = sum(prev) / len(prev) if prev else None
+    # La línea base solo cuenta semanas con volumen real, y hacen falta 3 (2026-10-28): el ≈5-oct avisó
+    # «posible SPAM» comparando 49% contra un «promedio» de 100% hecho con 2 semanas de 1 llamada cada una.
+    prev = [s["connect_rate"] for s in h["snapshots"] if s.get("total", 0) >= MIN_VOL]
+    avg = sum(prev) / len(prev) if len(prev) >= 3 else None
     flag = (avg is not None and w["total"] >= MIN_VOL and avg > 0 and w["connect_rate"] < DROP_FACTOR * avg)
     if flag:
         alerts.append(f"{w['num']}: connect {w['connect_rate']}% (prom {avg:.0f}%), {w['total']} llamadas")
